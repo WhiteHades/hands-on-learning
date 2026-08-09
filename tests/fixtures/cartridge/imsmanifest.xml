@@ -20,8 +20,7 @@
       </lomm:lifeCycle>
       <lomm:rights>
         <lomm:copyrightAndOtherRestrictions><lomm:source>LOMv1.0</lomm:source><lomm:value>yes</lomm:value></lomm:copyrightAndOtherRestrictions>
-        <lomm:description><lomm:string language="en">SPDX-License-Identifier: MIT
-Copyright 2026 Test Contributors</lomm:string></lomm:description>
+        <lomm:description><lomm:string language="en">SPDX-License-Identifier: MIT</lomm:string></lomm:description>
       </lomm:rights>
     </lomm:lom>
   </metadata>
