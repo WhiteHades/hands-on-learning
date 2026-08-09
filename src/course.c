@@ -2,13 +2,10 @@
 
 #include <dirent.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <json-c/json.h>
-#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <unistd.h>
 
 static int copy_string(char *target, size_t capacity, const char *value,
