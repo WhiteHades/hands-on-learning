@@ -17,8 +17,16 @@ Private staging material captured from an authorized course source before standa
 _Avoid_: Common Cartridge, public course
 
 **Course catalog**:
-The public JSON index that records cartridge URLs, sizes, digests, compatibility, and display metadata.
+The public JSON index that records cartridge and optional exercise profile URLs, sizes, digests, compatibility, and display metadata.
 _Avoid_: Store, marketplace, course format
+
+**Exercise profile**:
+A strict declarative JSON companion that binds application-owned local exercise behavior to one exact Common Cartridge, lesson item, referenced resource, and set of file digests.
+_Avoid_: Course format, executable manifest, shell recipe
+
+**Sandbox stage**:
+A fresh private directory assembled for one Run or Check action from learner-editable workspace files and verified readonly or hidden cartridge resources.
+_Avoid_: Learner workspace, package extraction, persistent build directory
 
 **Provider adapter**:
 A private importer that transforms authorized source material into HTML, LOM, QTI, and Common Cartridge structures.
