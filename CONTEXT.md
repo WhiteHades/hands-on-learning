@@ -1,37 +1,33 @@
 # Hands-on Learning
 
-Hands-on Learning gives learners a local course workspace for reading, editing, running, and checking practical exercises.
+Hands-on Learning is a local terminal reader for portable digital learning content.
 
 ## Language
 
-**Course bundle**:
-A complete, versioned course distribution that contains lessons, exercise files, checks, media, license terms, and attribution.
-_Avoid_: Course archive, content package
+**Common Cartridge**:
+A 1EdTech Common Cartridge 1.3 package with the `.imscc` extension, a root `imsmanifest.xml`, HTML resources, LOM metadata, and QTI assessments.
+_Avoid_: HOL course, proprietary bundle, custom course format
 
-**Normalized course**:
-A course bundle that uses stable local IDs and paths and contains no source account data, source API details, or remote asset links.
-_Avoid_: Scraped course, imported dump
+**Cartridge source**:
+The unpacked standards-compliant files used to build a Common Cartridge package.
+_Avoid_: Custom manifest, normalized bundle
 
 **Raw source archive**:
-Private staging material captured from an authorized course source before normalization.
-_Avoid_: Course bundle, public course
+Private staging material captured from an authorized course source before standards conversion.
+_Avoid_: Common Cartridge, public course
 
 **Course catalog**:
-The public index of free course bundles that Hands-on Learning can install.
-_Avoid_: Store, marketplace, registry
+The public JSON index that records cartridge URLs, sizes, digests, compatibility, and display metadata.
+_Avoid_: Store, marketplace, course format
 
 **Provider adapter**:
-A private importer that transforms authorized source material into a normalized course.
-_Avoid_: Scraper, downloader
+A private importer that transforms authorized source material into HTML, LOM, QTI, and Common Cartridge structures.
+_Avoid_: Scraper, public loader
 
-**Learner workspace**:
-The private local copy of exercise files that a learner can edit without changing the installed course bundle.
-_Avoid_: Course files, source archive
-
-**Check**:
-The course-defined evaluation that decides whether an exercise or quiz is complete.
-_Avoid_: Test when referring to learner completion
+**Learner progress**:
+Private local completion state keyed by stable cartridge and item identifiers.
+_Avoid_: Cartridge content, source archive
 
 **Attribution**:
-The public source and authorship notice required by a course permission or license.
+The public source and authorship notice represented in LOM rights metadata and catalog output.
 _Avoid_: Ownership claim, permission record
