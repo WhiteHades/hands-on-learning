@@ -643,10 +643,14 @@ static int parse_lesson(json_object *object, hol_course *course,
     const char *profile = required_string(runner, "profile", error);
     json_object *check = required(runner, "check", json_type_object, error);
     const char *check_kind = check != NULL ? required_string(check, "kind", error) : NULL;
+    bool c_runner = runner_id != NULL && profile != NULL &&
+      strcmp(runner_id, "c") == 0 &&
+      (strcmp(profile, "c11") == 0 || strcmp(profile, "c11-32") == 0 ||
+       strcmp(profile, "c23") == 0);
+    bool sql_runner = runner_id != NULL && profile != NULL &&
+      strcmp(runner_id, "sql") == 0 && strcmp(profile, "sqlite3") == 0;
     if (runner_id == NULL || profile == NULL || check_kind == NULL ||
-        strcmp(runner_id, "c") != 0 ||
-        (strcmp(profile, "c11") != 0 && strcmp(profile, "c11-32") != 0 &&
-         strcmp(profile, "c23") != 0)) {
+        (!c_runner && !sql_runner)) {
       hol_error_set(error, HOL_ERR_UNSUPPORTED, "unsupported runner profile");
       return -1;
     }
@@ -654,7 +658,7 @@ static int parse_lesson(json_object *object, hol_course *course,
                       "runner", error);
     (void)copy_string(lesson->runner.profile, sizeof(lesson->runner.profile), profile,
                       "runner profile", error);
-    if (strcmp(check_kind, "stdout") == 0) {
+    if (strcmp(check_kind, "stdout") == 0 && c_runner) {
       const char *expected = required_string(check, "expected", error);
       if (expected == NULL || strlen(expected) > HOL_OUTPUT_MAX) return -1;
       lesson->runner.check_kind = HOL_CHECK_STDOUT;

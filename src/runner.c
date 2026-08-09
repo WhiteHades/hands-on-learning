@@ -84,7 +84,7 @@ static void capture_read(int descriptor, capture_buffer *buffer, pid_t process) 
 }
 
 static int execute_process(char *const arguments[], const char *working_directory,
-                           bool submit, hol_run_result *result,
+                           const char *input_path, bool submit, hol_run_result *result,
                            hol_error *error) {
   int standard_output[2];
   int standard_error[2];
@@ -101,10 +101,14 @@ static int execute_process(char *const arguments[], const char *working_director
     (void)setpgid(0, 0);
     (void)close(standard_output[0]);
     (void)close(standard_error[0]);
-    if (dup2(standard_output[1], STDOUT_FILENO) < 0 ||
+    int input = input_path != NULL ? open(input_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW) : -1;
+    if ((input_path != NULL && input < 0) ||
+        (input >= 0 && dup2(input, STDIN_FILENO) < 0) ||
+        dup2(standard_output[1], STDOUT_FILENO) < 0 ||
         dup2(standard_error[1], STDERR_FILENO) < 0 ||
         close(standard_output[1]) < 0 || close(standard_error[1]) < 0 ||
         chdir(working_directory) < 0) _exit(126);
+    if (input >= 0) (void)close(input);
     apply_limits();
     if (setenv("HOL_SUBMIT", submit ? "1" : "0", 1) < 0) _exit(126);
     execvp(arguments[0], arguments);
@@ -186,16 +190,88 @@ static void trim_trailing_newlines(char *value) {
     value[--length] = '\0';
 }
 
+static int compare_targets(const void *left, const void *right) {
+  const hol_course_file *const *first = left;
+  const hol_course_file *const *second = right;
+  return strcmp((*first)->target, (*second)->target);
+}
+
+static int run_sql(const hol_lesson *lesson, const char *workspace,
+                   hol_run_mode mode, hol_run_result *result,
+                   hol_error *error) {
+  hol_course_file **files = calloc(lesson->file_count, sizeof(*files));
+  if (files == NULL) return -1;
+  size_t file_count = 0U;
+  for (size_t index = 0U; index < lesson->file_count; index++)
+    if (ends_with(lesson->files[index].target, ".sql")) files[file_count++] = &lesson->files[index];
+  qsort(files, file_count, sizeof(*files), compare_targets);
+  char *sql = calloc(16U * HOL_OUTPUT_MAX + 1U, 1U);
+  if (sql == NULL) {
+    free(files);
+    return -1;
+  }
+  size_t length = 0U;
+  for (size_t index = 0U; index < file_count; index++) {
+    bool check_only = strstr(files[index]->target, "test") != NULL;
+    if (mode == HOL_RUN && check_only) continue;
+    char path[4096];
+    if (hol_join_path(path, sizeof(path), workspace, files[index]->target, error) < 0) {
+      free(sql);
+      free(files);
+      return -1;
+    }
+    size_t file_length = 0U;
+    char *content = hol_read_text(path, 16U * HOL_OUTPUT_MAX - length,
+                                  &file_length, error);
+    if (content == NULL || file_length > 16U * HOL_OUTPUT_MAX - length - 2U) {
+      free(content);
+      free(sql);
+      free(files);
+      return -1;
+    }
+    memcpy(sql + length, content, file_length);
+    length += file_length;
+    sql[length++] = '\n';
+    free(content);
+  }
+  free(files);
+  char input[4096];
+  char database[4096];
+  int input_length = snprintf(input, sizeof(input), "%s/.hol-input.sql", workspace);
+  int database_length = snprintf(database, sizeof(database), "%s/.hol.sqlite3", workspace);
+  if (input_length < 0 || (size_t)input_length >= sizeof(input) || database_length < 0 ||
+      (size_t)database_length >= sizeof(database) ||
+      hol_atomic_write(input, sql, length, error) < 0) {
+    free(sql);
+    return -1;
+  }
+  free(sql);
+  (void)unlink(database);
+  char *arguments[] = {
+    "sqlite3", "-batch", "-bail", "-header", "-column", database, NULL,
+  };
+  int status = execute_process(arguments, workspace, input, mode == HOL_CHECK,
+                               result, error);
+  (void)unlink(input);
+  (void)unlink(database);
+  if (status == 0)
+    result->passed = result->exit_code == 0 && !result->timed_out &&
+                     !result->stdout_truncated && !result->stderr_truncated;
+  return status;
+}
+
 int hol_runner_execute(const hol_course *course, const hol_lesson *lesson,
                        const char *workspace, hol_run_mode mode,
                        hol_run_result *result, hol_error *error) {
   (void)course;
   if (lesson == NULL || workspace == NULL || result == NULL ||
-      strcmp(lesson->runner.id, "c") != 0) {
+      (strcmp(lesson->runner.id, "c") != 0 && strcmp(lesson->runner.id, "sql") != 0)) {
     hol_error_set(error, HOL_ERR_UNSUPPORTED, "lesson has no supported runner");
     return -1;
   }
   memset(result, 0, sizeof(*result));
+  if (strcmp(lesson->runner.id, "sql") == 0)
+    return run_sql(lesson, workspace, mode, result, error);
   char executable[4096];
   int executable_length = snprintf(executable, sizeof(executable), "%s/.hol-program", workspace);
   if (executable_length < 0 || (size_t)executable_length >= sizeof(executable)) return -1;
@@ -220,13 +296,19 @@ int hol_runner_execute(const hol_course *course, const hol_lesson *lesson,
     hol_error_set(error, HOL_ERR_SCHEMA, "C lesson has no source files");
     return -1;
   }
+  if (strcmp(lesson->runner.profile, "c11-32") == 0) {
+    compiler[count++] = "-Wl,--wrap=malloc";
+    compiler[count++] = "-Wl,--wrap=calloc";
+    compiler[count++] = "-Wl,--wrap=realloc";
+    compiler[count++] = "-Wl,--wrap=free";
+  }
   compiler[count++] = "-lm";
   compiler[count++] = "-o";
   compiler[count++] = executable;
   compiler[count] = NULL;
 
   hol_run_result compilation = {0};
-  int status = execute_process(compiler, workspace, false, &compilation, error);
+  int status = execute_process(compiler, workspace, NULL, false, &compilation, error);
   free(compiler);
   if (status < 0) return -1;
   if (compilation.exit_code != 0 || compilation.timed_out) {
@@ -235,7 +317,8 @@ int hol_runner_execute(const hol_course *course, const hol_lesson *lesson,
   }
   hol_run_result_free(&compilation);
   char *execution_arguments[] = {executable, NULL};
-  if (execute_process(execution_arguments, workspace, mode == HOL_CHECK, result, error) < 0) {
+  if (execute_process(execution_arguments, workspace, NULL, mode == HOL_CHECK,
+                      result, error) < 0) {
     (void)unlink(executable);
     return -1;
   }
