@@ -16,7 +16,7 @@ LDLIBS += -fsanitize=address,undefined
 endif
 
 APP := build/hands-on-learning
-SOURCES := $(wildcard src/*.c)
+SOURCES := $(filter-out src/common.c,$(wildcard src/*.c))
 CORE_SOURCES := $(filter-out src/main.c,$(SOURCES))
 OBJECTS := $(patsubst src/%.c,build/%.o,$(SOURCES))
 TEST_SOURCES := $(wildcard tests/test_*.c)
