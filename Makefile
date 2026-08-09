@@ -17,6 +17,7 @@ endif
 
 APP := build/hands-on-learning
 DEMO_CARTRIDGE := build/hol.demo-c-1.0.0.imscc
+DEMO_STAGE := build/demo-cartridge
 DEMO_SOURCES := $(wildcard courses/demo/* courses/demo/web/* courses/demo/assessments/*)
 SOURCES := $(wildcard src/*.c)
 CORE_SOURCES := $(filter-out src/main.c,$(SOURCES))
@@ -41,10 +42,13 @@ build:
 	mkdir -p $@
 
 $(DEMO_CARTRIDGE): $(DEMO_SOURCES) | build
-	rm -f $@
-	bsdtar --format zip --options zip:compression=deflate --uid 0 --gid 0 \
-		--uname '' --gname '' --mtime '2026-08-09 00:00Z' -cf $@ \
-		-C courses/demo imsmanifest.xml LICENSE web assessments
+	rm -rf $(DEMO_STAGE) $@
+	mkdir -p $(DEMO_STAGE)
+	cp -R courses/demo/. $(DEMO_STAGE)/
+	find $(DEMO_STAGE) -type f -exec touch -t 202608090000 {} +
+	cd $(DEMO_STAGE) && find imsmanifest.xml LICENSE web assessments -type f \
+		-print | LC_ALL=C sort | zip -X -q $(abspath $@) -@
+	rm -rf $(DEMO_STAGE)
 
 test: $(TEST_BINS) $(APP) $(DEMO_CARTRIDGE)
 	@set -e; for test_bin in $(TEST_BINS); do "$$test_bin"; done
