@@ -137,6 +137,8 @@ int hol_catalog_list(const char *catalog_path, FILE *stream, hol_error *error) {
       json_object_put(catalog);
       return -1;
     }
+    for (char *cursor = entry.attribution; *cursor != '\0'; cursor++)
+      if (*cursor == '\r' || *cursor == '\n') *cursor = ' ';
     (void)fprintf(stream, "%s\t%s\t%zu lessons\t%s\t%s\t%s\n", entry.id,
                   entry.version, entry.lesson_count, entry.license_spdx,
                   entry.title, entry.attribution);

@@ -115,6 +115,16 @@ static void set_output(ui_session *session, const char *text) {
   session->output_scroll = 0U;
 }
 
+static void single_line(char *target, size_t capacity, const char *source) {
+  size_t index = 0U;
+  while (source[index] != '\0' && index + 1U < capacity) {
+    char value = source[index];
+    target[index] = value == '\n' || value == '\r' ? ' ' : value;
+    index++;
+  }
+  target[index] = '\0';
+}
+
 static bool ends_with_text(const char *value, const char *suffix) {
   size_t value_length = strlen(value);
   size_t suffix_length = strlen(suffix);
@@ -466,10 +476,7 @@ static void draw_popup(ui_session *session, int rows, int columns) {
       "/  n  N       search / next / previous\n"
       "Space l l     lesson picker\n"
       "Space l c     course picker\n"
-      "Space r/t     run / check\n"
-      "Space x/m     reset / media\n"
-      "gt gT ]b [b   file navigation\n"
-      "e or Enter    edit / select\n"
+      "Enter          select or answer\n"
       "Esc / q       close / quit";
     draw_text(popup, help, 0U, PAIR_TEXT);
   } else if (session->popup == POPUP_COURSES) {
@@ -532,11 +539,13 @@ static void render(ui_session *session) {
                  session->search_active ? session->query : "",
                   session->keys.pending_length > 0U ? session->keys.pending : "");
   int attribution_column = columns / 3;
+  char attribution[1025];
+  single_line(attribution, sizeof(attribution), session->course->attribution);
   if (attribution_column > 0 && attribution_column < columns - 1)
-    (void)mvaddnstr(rows - 2, attribution_column, session->course->attribution,
+    (void)mvaddnstr(rows - 2, attribution_column, attribution,
                     columns - attribution_column - 1);
   (void)mvprintw(rows - 1, 1,
-                 "Space ll lessons  Space lc courses  Space r run  Space t check  ? help  q quit");
+                  "Space ll lessons  Space lc courses  Enter select  ? help  q quit");
 
   int body_height = rows - 3;
   if (body_height < 5 || columns < 30 || lesson == NULL) {
