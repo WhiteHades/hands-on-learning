@@ -2,37 +2,36 @@
 <questestinterop xmlns="http://www.imsglobal.org/xsd/ims_qtiasiv1p2"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="http://www.imsglobal.org/xsd/ims_qtiasiv1p2 http://www.imsglobal.org/profile/cc/ccv1p3/ccv1p3_qtiasiv1p2p1_v1p0.xsd">
-  <assessment ident="header-quiz" title="Header Check">
+  <assessment ident="knowledge-check" title="Knowledge Check">
     <qtimetadata>
       <qtimetadatafield><fieldlabel>cc_profile</fieldlabel><fieldentry>cc.exam.v0p1</fieldentry></qtimetadatafield>
     </qtimetadata>
-    <section ident="header-section">
-      <item ident="printf-header" title="printf header">
+    <section ident="test-section">
+      <item ident="standard-question" title="Package standard">
         <itemmetadata>
           <qtimetadata>
             <qtimetadatafield><fieldlabel>cc_profile</fieldlabel><fieldentry>cc.multiple_choice.v0p1</fieldentry></qtimetadatafield>
           </qtimetadata>
         </itemmetadata>
         <presentation>
-          <material><mattext texttype="text/plain">Which header declares printf?</mattext></material>
+          <material><mattext texttype="text/plain">Which extension identifies a Common Cartridge package?</mattext></material>
           <response_lid ident="response" rcardinality="Single">
             <render_choice shuffle="No">
-              <response_label ident="a"><material><mattext texttype="text/plain">math.h</mattext></material></response_label>
-              <response_label ident="b"><material><mattext texttype="text/plain">stdio.h</mattext></material></response_label>
-              <response_label ident="c"><material><mattext texttype="text/plain">stdlib.h</mattext></material></response_label>
+              <response_label ident="a"><material><mattext texttype="text/plain">.imscc</mattext></material></response_label>
+              <response_label ident="b"><material><mattext texttype="text/plain">.custom</mattext></material></response_label>
             </render_choice>
           </response_lid>
         </presentation>
         <resprocessing>
           <outcomes><decvar vartype="Decimal" minvalue="0" maxvalue="1"/></outcomes>
           <respcondition continue="No">
-            <conditionvar><varequal respident="response">b</varequal></conditionvar>
+            <conditionvar><varequal respident="response">a</varequal></conditionvar>
             <setvar action="Set">1</setvar>
             <displayfeedback feedbacktype="Response" linkrefid="correct"/>
           </respcondition>
         </resprocessing>
         <itemfeedback ident="correct">
-          <flow_mat><material><mattext texttype="text/plain">stdio.h declares the standard input and output functions.</mattext></material></flow_mat>
+          <flow_mat><material><mattext texttype="text/plain">Common Cartridge packages use .imscc.</mattext></material></flow_mat>
         </itemfeedback>
       </item>
     </section>
