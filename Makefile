@@ -16,6 +16,8 @@ LDLIBS += -fsanitize=address,undefined
 endif
 
 APP := build/hands-on-learning
+DEMO_CARTRIDGE := build/hol.demo-c-1.0.0.imscc
+DEMO_SOURCES := $(wildcard courses/demo/* courses/demo/web/* courses/demo/assessments/*)
 SOURCES := $(wildcard src/*.c)
 CORE_SOURCES := $(filter-out src/main.c,$(SOURCES))
 OBJECTS := $(patsubst src/%.c,build/%.o,$(SOURCES))
@@ -24,7 +26,7 @@ TEST_BINS := $(patsubst tests/%.c,build/%,$(TEST_SOURCES))
 
 .PHONY: all clean test check sanitize install
 
-all: $(APP)
+all: $(APP) $(DEMO_CARTRIDGE)
 
 $(APP): $(OBJECTS)
 	$(CC) $(CFLAGS) $^ $(LDLIBS) -o $@
@@ -38,7 +40,11 @@ build/test_%: tests/test_%.c $(CORE_SOURCES) include/hol.h | build
 build:
 	mkdir -p $@
 
-test: $(TEST_BINS) $(APP)
+$(DEMO_CARTRIDGE): $(DEMO_SOURCES) | build
+	rm -f $@
+	cd courses/demo && zip -X -q -r ../../$@ imsmanifest.xml LICENSE web assessments
+
+test: $(TEST_BINS) $(APP) $(DEMO_CARTRIDGE)
 	@set -e; for test_bin in $(TEST_BINS); do "$$test_bin"; done
 
 check: all test
@@ -47,10 +53,11 @@ sanitize:
 	$(MAKE) clean
 	$(MAKE) SANITIZE=1 check
 
-install: $(APP)
+install: $(APP) $(DEMO_CARTRIDGE)
 	install -Dm755 $(APP) $(DESTDIR)$(PREFIX)/bin/hands-on-learning
 	install -d $(DESTDIR)$(PREFIX)/share/hands-on-learning/courses
-	cp -R courses/demo.holcourse $(DESTDIR)$(PREFIX)/share/hands-on-learning/courses/
+	install -Dm644 $(DEMO_CARTRIDGE) \
+		$(DESTDIR)$(PREFIX)/share/hands-on-learning/courses/hol.demo-c-1.0.0.imscc
 	install -Dm644 courses/catalog.json \
 		$(DESTDIR)$(PREFIX)/share/hands-on-learning/courses/catalog.json
 
