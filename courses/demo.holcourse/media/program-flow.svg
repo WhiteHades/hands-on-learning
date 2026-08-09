@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="320" viewBox="0 0 960 320" role="img" aria-labelledby="title description">
+  <title id="title">A C program moving from source to local feedback</title>
+  <desc id="description">Three connected terminal panels labeled Edit, Run, and Check.</desc>
+  <rect width="960" height="320" fill="#1e1e2e"/>
+  <g font-family="monospace" font-size="30" text-anchor="middle">
+    <g fill="#313244" stroke="#6c7086" stroke-width="3">
+      <rect x="65" y="90" width="220" height="140" rx="12"/>
+      <rect x="370" y="90" width="220" height="140" rx="12"/>
+      <rect x="675" y="90" width="220" height="140" rx="12"/>
+    </g>
+    <g fill="#cdd6f4">
+      <text x="175" y="170">EDIT</text>
+      <text x="480" y="170">RUN</text>
+      <text x="785" y="170">CHECK</text>
+    </g>
+    <g fill="#cba6f7">
+      <text x="328" y="170">-&gt;</text>
+      <text x="633" y="170">-&gt;</text>
+    </g>
+  </g>
+</svg>

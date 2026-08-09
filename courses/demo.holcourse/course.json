@@ -19,6 +19,38 @@
     "file": "LICENSE",
     "attribution": "Copyright 2026 Hands-on Learning Contributors"
   },
+  "files": [
+    {
+      "path": "LICENSE",
+      "bytes": 1087,
+      "sha256": "177211878bd35d2fe17e3f4175617b4eb1ed3dce0118375240401d291d97f7ac"
+    },
+    {
+      "path": "lessons/welcome.md",
+      "bytes": 384,
+      "sha256": "8e8ba6d82a745de06f6adda51552bfdba4ab46fec7a9e6db3b2a4443e39e6f36"
+    },
+    {
+      "path": "lessons/greeting.md",
+      "bytes": 324,
+      "sha256": "72a959aa763525594c964b4e5582528fe4f3fe2e6ed6ee99d385081e03680fcc"
+    },
+    {
+      "path": "lessons/quiz.md",
+      "bytes": 180,
+      "sha256": "6aec42075fd42ac2c3f47d92f8b6c92409741e98358db871298ae366a4a9eb3b"
+    },
+    {
+      "path": "files/main.c",
+      "bytes": 79,
+      "sha256": "0d3e44abb53eb6fa01fb3db5a7372a86ddf9077dc49fe719dc497af3243f0da9"
+    },
+    {
+      "path": "media/program-flow.svg",
+      "bytes": 953,
+      "sha256": "6124808874dd24a8e08c5d5e74f8647c4878da0695e1fe1d361c114760158489"
+    }
+  ],
   "chapters": [
     {
       "id": "start",
