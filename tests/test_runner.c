@@ -12,6 +12,13 @@ static void write_source(const char *workspace, const char *source) {
   assert(hol_atomic_write(path, source, strlen(source), &error) == 0);
 }
 
+static void write_named(const char *workspace, const char *name, const char *source) {
+  char path[4096];
+  hol_error error = {0};
+  assert(hol_join_path(path, sizeof(path), workspace, name, &error) == 0);
+  assert(hol_atomic_write(path, source, strlen(source), &error) == 0);
+}
+
 int main(void) {
   char workspace[] = "/tmp/hol-runner-XXXXXX";
   assert(mkdtemp(workspace) != NULL);
@@ -57,6 +64,38 @@ int main(void) {
   assert(hol_runner_execute(&course, &lesson, workspace, HOL_RUN, &result, &error) == 0);
   assert(result.timed_out);
   assert(!result.passed);
+  hol_run_result_free(&result);
+
+  hol_course_file sql_files[3] = {0};
+  (void)strcpy(sql_files[0].target, "001_up.sql");
+  sql_files[0].role = HOL_FILE_READONLY;
+  (void)strcpy(sql_files[1].target, "002_main.sql");
+  sql_files[1].role = HOL_FILE_EDITABLE;
+  (void)strcpy(sql_files[2].target, "003_test.sql");
+  sql_files[2].role = HOL_FILE_READONLY;
+  hol_lesson sql_lesson = {
+    .kind = HOL_LESSON_EXERCISE,
+    .files = sql_files,
+    .file_count = 3U,
+    .runner = {
+      .id = "sql",
+      .profile = "sqlite3",
+      .check_kind = HOL_CHECK_TESTS,
+    },
+  };
+  write_named(workspace, "001_up.sql",
+              "CREATE TABLE users(name TEXT); INSERT INTO users VALUES ('Ada');\n");
+  write_named(workspace, "002_main.sql", "SELECT name FROM users;\n");
+  write_named(workspace, "003_test.sql", "SELECT count(*) AS total FROM users;\n");
+  assert(unsetenv("HOL_TEST_TIMEOUT_MS") == 0);
+  assert(hol_runner_execute(&course, &sql_lesson, workspace, HOL_RUN,
+                            &result, &error) == 0);
+  assert(result.passed && strstr(result.stdout_data, "Ada") != NULL);
+  assert(strstr(result.stdout_data, "total") == NULL);
+  hol_run_result_free(&result);
+  assert(hol_runner_execute(&course, &sql_lesson, workspace, HOL_CHECK,
+                            &result, &error) == 0);
+  assert(result.passed && strstr(result.stdout_data, "total") != NULL);
   hol_run_result_free(&result);
 
   char command[8192];
