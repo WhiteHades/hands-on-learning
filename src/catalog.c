@@ -366,7 +366,8 @@ int hol_catalog_install(const char *catalog_path, const char *course_id,
     hol_error_set(error, HOL_ERR_ARGUMENT, "course is not in the catalog: %s", course_id);
     return -1;
   }
-  if (mkdir(destination, 0700) < 0 && errno != EEXIST) return -1;
+  if (ensure_directories(destination) < 0 ||
+      (mkdir(destination, 0700) < 0 && errno != EEXIST)) return -1;
   char archive[4096];
   char staging[4096];
   int written = snprintf(archive, sizeof(archive), "%s/.download.XXXXXX", destination);

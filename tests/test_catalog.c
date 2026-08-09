@@ -15,7 +15,7 @@ int main(void) {
   hol_error error = {0};
   assert(hol_join_path(archive, sizeof(archive), root, "demo.holcourse.tar", &error) == 0);
   assert(hol_join_path(catalog, sizeof(catalog), root, "catalog.json", &error) == 0);
-  assert(hol_join_path(installed, sizeof(installed), root, "installed", &error) == 0);
+  assert(hol_join_path(installed, sizeof(installed), root, "data/courses", &error) == 0);
 
   char command[8192];
   (void)snprintf(command, sizeof(command),
@@ -45,7 +45,6 @@ int main(void) {
   assert(strstr(listing, "hol.demo-c") != NULL);
   free(listing);
 
-  assert(mkdir(installed, 0700) == 0);
   assert(hol_catalog_install(catalog, "hol.demo-c", installed, &error) == 0);
   char course_path[4096];
   assert(hol_join_path(course_path, sizeof(course_path), installed,
