@@ -9,12 +9,12 @@ static void usage(FILE *stream) {
   (void)fprintf(stream,
     "%s %s\n\n"
     "Usage:\n"
-    "  hands-on-learning [--course PATH]\n"
+    "  hands-on-learning [--course PATH [--exercise-profile PATH]]\n"
     "  hands-on-learning validate PATH\n"
     "  hands-on-learning catalog list [CATALOG]\n"
     "  hands-on-learning catalog install ID [CATALOG] [DESTINATION]\n"
     "  hands-on-learning --version\n\n"
-    "Select an IMS Common Cartridge with --course or HOL_COURSE.\n",
+    "Local cartridges need --exercise-profile PATH to enable exercises.\n",
     HOL_APP_NAME, HOL_APP_VERSION);
 }
 
@@ -70,6 +70,13 @@ static int choose_course(char course_path[4096], hol_error *error) {
   return 0;
 }
 
+static int sibling_profile(const char *course, char profile[4096]) {
+  size_t length = strlen(course);
+  if (length < 6U || strcmp(course + length - 6U, ".imscc") != 0) return -1;
+  int written = snprintf(profile, 4096, "%.*s.profile.json", (int)(length - 6U), course);
+  return written >= 0 && written < 4096 && access(profile, R_OK) == 0 ? 0 : -1;
+}
+
 int main(int argc, char **argv) {
   hol_error error = {0};
   if (argc == 2 && strcmp(argv[1], "--version") == 0) {
@@ -117,8 +124,15 @@ int main(int argc, char **argv) {
     return 0;
   }
   char selected_course[4096];
+  char selected_profile[4096];
   const char *course = getenv("HOL_COURSE");
+  const char *profile = NULL;
   if (argc == 3 && strcmp(argv[1], "--course") == 0) course = argv[2];
+  else if (argc == 5 && strcmp(argv[1], "--course") == 0 &&
+           strcmp(argv[3], "--exercise-profile") == 0) {
+    course = argv[2];
+    profile = argv[4];
+  }
   else if (argc != 1) {
     usage(stderr);
     return 2;
@@ -129,8 +143,9 @@ int main(int argc, char **argv) {
       return 1;
     }
     course = selected_course;
+    if (sibling_profile(course, selected_profile) == 0) profile = selected_profile;
   }
-  if (hol_ui_run(course, &error) < 0) {
+  if (hol_ui_run(course, profile, &error) < 0) {
     (void)fprintf(stderr, "%s: %s\n", HOL_APP_NAME,
                   error.message[0] != '\0' ? error.message : strerror(errno));
     return 1;

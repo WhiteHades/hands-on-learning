@@ -20,6 +20,10 @@ typedef struct {
   char url[2049];
   char sha256[65];
   uint64_t bytes;
+  char profile_url[2049];
+  char profile_sha256[65];
+  uint64_t profile_bytes;
+  bool has_profile;
   size_t lesson_count;
 } catalog_entry;
 
@@ -62,9 +66,10 @@ static bool digest_string(const char *value) {
   return true;
 }
 
-static bool cartridge_url(const char *url) {
+static bool artifact_url(const char *url, const char *suffix) {
   size_t length = strlen(url);
-  return length > 6U && strcmp(url + length - 6U, ".imscc") == 0 &&
+  size_t suffix_length = strlen(suffix);
+  return length > suffix_length && strcmp(url + length - suffix_length, suffix) == 0 &&
          (strncmp(url, "https://", 8U) == 0 || strncmp(url, "file://", 7U) == 0);
 }
 
@@ -94,9 +99,28 @@ static int parse_entry(json_object *object, catalog_entry *entry,
   if (lesson_count < 1 || lesson_count > 10000 || byte_count < 1 ||
       (uint64_t)byte_count > maximum_bundle_bytes || !hol_valid_id(entry->id) ||
       !hol_version_supported(entry->minimum_app_version) ||
-      !digest_string(entry->sha256) || !cartridge_url(entry->url)) return -1;
+       !digest_string(entry->sha256) || !artifact_url(entry->url, ".imscc")) return -1;
   entry->lesson_count = (size_t)lesson_count;
   entry->bytes = (uint64_t)byte_count;
+  json_object *profile = NULL;
+  if (json_object_object_get_ex(object, "exercise_profile", &profile)) {
+    if (profile == NULL || !json_object_is_type(profile, json_type_object)) {
+      hol_error_set(error, HOL_ERR_SCHEMA, "invalid catalog field: exercise_profile");
+      return -1;
+    }
+    json_object *profile_bytes = required(profile, "bytes", json_type_int, error);
+    if (profile_bytes == NULL ||
+        copy_field(entry->profile_url, sizeof(entry->profile_url), profile,
+                   "url", error) < 0 ||
+        copy_field(entry->profile_sha256, sizeof(entry->profile_sha256), profile,
+                   "sha256", error) < 0) return -1;
+    int64_t profile_byte_count = json_object_get_int64(profile_bytes);
+    if (profile_byte_count < 1 || profile_byte_count > 4LL * 1024LL * 1024LL ||
+        !digest_string(entry->profile_sha256) ||
+        !artifact_url(entry->profile_url, ".profile.json")) return -1;
+    entry->profile_bytes = (uint64_t)profile_byte_count;
+    entry->has_profile = true;
+  }
   return 0;
 }
 
@@ -224,18 +248,20 @@ static size_t write_download(char *data, size_t size, size_t count, void *user_d
   return length;
 }
 
-static int download_bundle(const catalog_entry *entry, const char *path,
-                           hol_error *error) {
+static int download_artifact(const char *url, uint64_t bytes,
+                             const char *sha256, const char *path,
+                             hol_error *error) {
   int descriptor = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
   if (descriptor < 0) return -1;
   CURL *curl = curl_easy_init();
   if (curl == NULL) {
     (void)close(descriptor);
+    (void)unlink(path);
     return -1;
   }
-  download_target target = {.descriptor = descriptor, .limit = entry->bytes};
-  const char *protocol = strncmp(entry->url, "file://", 7U) == 0 ? "file" : "https";
-  (void)curl_easy_setopt(curl, CURLOPT_URL, entry->url);
+  download_target target = {.descriptor = descriptor, .limit = bytes};
+  const char *protocol = strncmp(url, "file://", 7U) == 0 ? "file" : "https";
+  (void)curl_easy_setopt(curl, CURLOPT_URL, url);
   (void)curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   (void)curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, protocol);
   (void)curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, protocol);
@@ -249,9 +275,9 @@ static int download_bundle(const catalog_entry *entry, const char *path,
   int sync_status = fsync(descriptor);
   int close_status = close(descriptor);
   if (sync_status < 0 || close_status < 0 || result != CURLE_OK ||
-      target.failed || target.written != entry->bytes) goto failure;
+      target.failed || target.written != bytes) goto failure;
   char actual[65];
-  if (hol_sha256_file(path, actual, error) < 0 || strcmp(actual, entry->sha256) != 0) {
+  if (hol_sha256_file(path, actual, error) < 0 || strcmp(actual, sha256) != 0) {
     hol_error_set(error, HOL_ERR_CHECKSUM, "download checksum mismatch");
     goto failure;
   }
@@ -275,6 +301,24 @@ static int ensure_directories(const char *path) {
     *cursor = '/';
   }
   return 0;
+}
+
+static bool artifact_matches(const char *path, uint64_t bytes,
+                             const char *sha256) {
+  struct stat status;
+  if (lstat(path, &status) < 0 || !S_ISREG(status.st_mode) ||
+      status.st_nlink != 1 || status.st_size < 0 ||
+      (uint64_t)status.st_size != bytes) return false;
+  char actual[65];
+  hol_error ignored = {0};
+  return hol_sha256_file(path, actual, &ignored) == 0 &&
+         strcmp(actual, sha256) == 0;
+}
+
+static int remove_artifact(const char *path, hol_error *error) {
+  if (unlink(path) == 0 || errno == ENOENT) return 0;
+  hol_error_set(error, HOL_ERR_IO, "cannot remove invalid cached artifact: %s", path);
+  return -1;
 }
 
 int hol_catalog_install_path(const char *catalog_path, const char *course_id,
@@ -312,10 +356,28 @@ int hol_catalog_install_path(const char *catalog_path, const char *course_id,
                         selected.id, selected.version);
   if (length < 0 || (size_t)length >= sizeof(final) ||
       (course_path != NULL && (size_t)length >= course_path_size)) return -1;
-  if (access(final, R_OK) == 0) {
+  char final_profile[4096];
+  length = snprintf(final_profile, sizeof(final_profile), "%s/%s-%s.profile.json",
+                    destination, selected.id, selected.version);
+  if (length < 0 || (size_t)length >= sizeof(final_profile)) return -1;
+  struct stat profile_status;
+  int profile_inspection = lstat(final_profile, &profile_status);
+  int profile_errno = errno;
+  if (!selected.has_profile && profile_inspection == 0 &&
+      remove_artifact(final_profile, error) < 0) return -1;
+  if (!selected.has_profile && profile_inspection < 0 && profile_errno != ENOENT) {
+    hol_error_set(error, HOL_ERR_IO, "cannot inspect cached exercise profile");
+    return -1;
+  }
+  bool cartridge_valid = artifact_matches(final, selected.bytes, selected.sha256);
+  bool profile_valid = !selected.has_profile ||
+    artifact_matches(final_profile, selected.profile_bytes, selected.profile_sha256);
+  if (cartridge_valid && profile_valid) {
     if (course_path != NULL) (void)snprintf(course_path, course_path_size, "%s", final);
     return 0;
   }
+  if (remove_artifact(final, error) < 0 || remove_artifact(final_profile, error) < 0)
+    return -1;
   char temporary[4096];
   length = snprintf(temporary, sizeof(temporary), "%s/.download.XXXXXX.imscc",
                     destination);
@@ -324,18 +386,40 @@ int hol_catalog_install_path(const char *catalog_path, const char *course_id,
   if (placeholder < 0) return -1;
   (void)close(placeholder);
   (void)unlink(temporary);
-  if (download_bundle(&selected, temporary, error) < 0) return -1;
+  char temporary_profile[4096] = {0};
+  length = snprintf(temporary_profile, sizeof(temporary_profile), "%.*s.profile.json",
+                    (int)(strlen(temporary) - 6U), temporary);
+  if (length < 0 || (size_t)length >= sizeof(temporary_profile)) return -1;
+  if (download_artifact(selected.url, selected.bytes, selected.sha256,
+                        temporary, error) < 0) return -1;
+  if (selected.has_profile &&
+      download_artifact(selected.profile_url, selected.profile_bytes,
+                        selected.profile_sha256, temporary_profile, error) < 0)
+    goto failure;
   hol_course *course = NULL;
-  if (hol_course_load(temporary, &course, error) < 0) goto failure;
+  int load_status = selected.has_profile
+    ? hol_course_load_profile(temporary, temporary_profile, &course, error)
+    : hol_course_load(temporary, &course, error);
+  if (load_status < 0) goto failure;
   bool matches = strcmp(course->id, selected.id) == 0 &&
                  strcmp(course->version, selected.version) == 0 &&
                  strcmp(course->title, selected.title) == 0 &&
-                 course->lesson_count == selected.lesson_count &&
-                 strcmp(course->license_spdx, selected.license_spdx) == 0 &&
-                 strcmp(course->attribution, selected.attribution) == 0;
+                  course->lesson_count == selected.lesson_count &&
+                  strcmp(course->license_spdx, selected.license_spdx) == 0 &&
+                  strcmp(course->attribution, selected.attribution) == 0 &&
+                  course->has_exercise_profile == selected.has_profile;
   hol_course_free(course);
-  if (!matches || rename(temporary, final) < 0) {
+  if (!matches) {
     hol_error_set(error, HOL_ERR_SCHEMA, "installed cartridge does not match catalog metadata");
+    goto failure;
+  }
+  if (selected.has_profile && rename(temporary_profile, final_profile) < 0) {
+    hol_error_set(error, HOL_ERR_IO, "cannot install exercise profile");
+    goto failure;
+  }
+  if (rename(temporary, final) < 0) {
+    if (selected.has_profile) (void)unlink(final_profile);
+    hol_error_set(error, HOL_ERR_IO, "cannot install cartridge");
     goto failure;
   }
   if (course_path != NULL) (void)snprintf(course_path, course_path_size, "%s", final);
@@ -343,6 +427,7 @@ int hol_catalog_install_path(const char *catalog_path, const char *course_id,
 
 failure:
   (void)unlink(temporary);
+  if (temporary_profile[0] != '\0') (void)unlink(temporary_profile);
   return -1;
 }
 
