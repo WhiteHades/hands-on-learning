@@ -20,6 +20,22 @@ static void usage(FILE *stream) {
 
 static const char *default_catalog(void) {
   if (access("courses/catalog.json", R_OK) == 0) return "courses/catalog.json";
+  static char user_catalog[4096];
+  const char *base = getenv("XDG_DATA_HOME");
+  char fallback[4096];
+  if (base == NULL || base[0] == '\0') {
+    const char *home = getenv("HOME");
+    if (home != NULL && home[0] != '\0') {
+      int length = snprintf(fallback, sizeof(fallback), "%s/.local/share", home);
+      if (length >= 0 && (size_t)length < sizeof(fallback)) base = fallback;
+    }
+  }
+  if (base != NULL && base[0] != '\0') {
+    int length = snprintf(user_catalog, sizeof(user_catalog),
+                          "%s/hands-on-learning/courses/catalog.json", base);
+    if (length >= 0 && (size_t)length < sizeof(user_catalog) &&
+        access(user_catalog, R_OK) == 0) return user_catalog;
+  }
   return "/usr/local/share/hands-on-learning/courses/catalog.json";
 }
 
