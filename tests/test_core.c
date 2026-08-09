@@ -27,7 +27,7 @@ static const char manifest[] =
   "      }]},\n"
   "      \"runner\": {\"id\": \"c\", \"profile\": \"c11\",\n"
   "        \"check\": {\"kind\": \"stdout\", \"expected\": \"hello\\n\"}},\n"
-  "      \"quiz\": null\n"
+  "      \"quiz\": null, \"media\": [\"media/flow.txt\"]\n"
   "    }]\n"
   "  }]\n"
   "}\n";
@@ -55,6 +55,8 @@ int main(void) {
   write_file(path, "# Hello\n");
   (void)snprintf(path, sizeof(path), "%s/lessons/main.c", root);
   write_file(path, "int main(void) { return 0; }\n");
+  (void)snprintf(path, sizeof(path), "%s/media/flow.txt", root);
+  write_file(path, "source -> output\n");
 
   hol_error error = {0};
   hol_course *course = NULL;
@@ -63,6 +65,7 @@ int main(void) {
   assert(course->lesson_count == 1U);
   const hol_lesson *lesson = hol_course_lesson(course, 0U);
   assert(lesson != NULL && strcmp(lesson->id, "hello") == 0);
+  assert(lesson->media_count == 1U);
 
   char workspace[4096];
   (void)snprintf(workspace, sizeof(workspace), "%s/workspace", root);

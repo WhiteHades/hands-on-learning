@@ -406,6 +406,25 @@ static int parse_lesson(json_object *object, hol_course *course,
       !json_object_is_type(quiz, json_type_null) && parse_quiz(quiz, lesson, error) < 0) {
     return -1;
   }
+  json_object *media = NULL;
+  if (json_object_object_get_ex(object, "media", &media)) {
+    if (!json_object_is_type(media, json_type_array) ||
+        json_object_array_length(media) > 64U) return -1;
+    lesson->media_count = json_object_array_length(media);
+    if (lesson->media_count > 0U) {
+      lesson->media_paths = calloc(lesson->media_count, sizeof(*lesson->media_paths));
+      if (lesson->media_paths == NULL) return -1;
+    }
+    for (size_t index = 0U; index < lesson->media_count; index++) {
+      json_object *item = json_object_array_get_idx(media, index);
+      if (!json_object_is_type(item, json_type_string)) return -1;
+      const char *media_path = json_object_get_string(item);
+      if (!hol_safe_relative_path(media_path) ||
+          validate_bundle_file(course, media_path, error) < 0) return -1;
+      lesson->media_paths[index] = strdup(media_path);
+      if (lesson->media_paths[index] == NULL) return -1;
+    }
+  }
   if ((lesson->kind == HOL_LESSON_EXERCISE && lesson->file_count == 0U) ||
       (lesson->kind == HOL_LESSON_QUIZ && lesson->question_count == 0U)) return -1;
   return 0;
