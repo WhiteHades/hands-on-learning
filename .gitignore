@@ -1,0 +1,30 @@
+build/
+compile_commands.json
+hands-on-learning
+
+# Raw source archives and learner state
+content/
+data/
+state/
+workspaces/
+.local/
+.private/
+
+# Credentials and local configuration
+creds.env
+*.env
+!.env.example
+
+# Previous implementation and temporary files
+node_modules/
+dist/
+.tmp/
+*.part
+*.tmp
+
+# Editor and platform metadata
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
