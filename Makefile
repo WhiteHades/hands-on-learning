@@ -17,9 +17,12 @@ endif
 
 APP := build/hands-on-learning
 TEST_CARTRIDGE := build/test-course.imscc
+TEST_PROFILE := build/test-course.profile.json
 TEST_STAGE := build/test-cartridge
 TEST_CARTRIDGE_SOURCES := $(wildcard tests/fixtures/cartridge/* \
-	tests/fixtures/cartridge/web/* tests/fixtures/cartridge/assessments/*)
+	tests/fixtures/cartridge/web/* tests/fixtures/cartridge/assessments/* \
+	tests/fixtures/cartridge/exercises/*)
+TEST_PROFILE_TEMPLATE := tests/fixtures/test-course.profile.json.in
 SOURCES := $(wildcard src/*.c)
 CORE_SOURCES := $(filter-out src/main.c,$(SOURCES))
 OBJECTS := $(patsubst src/%.c,build/%.o,$(SOURCES))
@@ -47,11 +50,24 @@ $(TEST_CARTRIDGE): $(TEST_CARTRIDGE_SOURCES) | build
 	mkdir -p $(TEST_STAGE)
 	cp -R tests/fixtures/cartridge/. $(TEST_STAGE)/
 	find $(TEST_STAGE) -type f -exec touch -t 202608090000 {} +
-	cd $(TEST_STAGE) && find imsmanifest.xml LICENSE web assessments -type f \
+	cd $(TEST_STAGE) && find imsmanifest.xml LICENSE web assessments exercises -type f \
 		-print | LC_ALL=C sort | zip -X -q $(abspath $@) -@
 	rm -rf $(TEST_STAGE)
 
-test: $(TEST_BINS) $(APP) $(TEST_CARTRIDGE)
+$(TEST_PROFILE): $(TEST_PROFILE_TEMPLATE) $(TEST_CARTRIDGE) | build
+	sed -e "s/@CARTRIDGE_SHA256@/$$(sha256sum $(TEST_CARTRIDGE) | cut -d' ' -f1)/" \
+		-e "s/@STARTER_SHA256@/$$(sha256sum tests/fixtures/cartridge/exercises/greeting.c | cut -d' ' -f1)/" \
+		-e "s/@SUPPORT_SHA256@/$$(sha256sum tests/fixtures/cartridge/exercises/exercise_support.c | cut -d' ' -f1)/" \
+		-e "s/@VISIBLE_SHA256@/$$(sha256sum tests/fixtures/cartridge/exercises/visible_test.c | cut -d' ' -f1)/" \
+		-e "s/@CHECK_SHA256@/$$(sha256sum tests/fixtures/cartridge/exercises/check_test.c | cut -d' ' -f1)/" \
+		-e "s/@STDOUT_MAIN_SHA256@/$$(sha256sum tests/fixtures/cartridge/exercises/stdout_main.c | cut -d' ' -f1)/" \
+		-e "s/@VISIBLE_STDOUT_SHA256@/$$(sha256sum tests/fixtures/cartridge/exercises/visible_stdout.c | cut -d' ' -f1)/" \
+		-e "s/@SQL_SETUP_SHA256@/$$(sha256sum tests/fixtures/cartridge/exercises/sql_setup.sql | cut -d' ' -f1)/" \
+		-e "s/@SQL_QUERY_SHA256@/$$(sha256sum tests/fixtures/cartridge/exercises/sql_query.sql | cut -d' ' -f1)/" \
+		-e "s/@SQL_CHECK_SHA256@/$$(sha256sum tests/fixtures/cartridge/exercises/sql_check.sql | cut -d' ' -f1)/" \
+		$(TEST_PROFILE_TEMPLATE) > $@
+
+test: $(TEST_BINS) $(APP) $(TEST_CARTRIDGE) $(TEST_PROFILE)
 	@set -e; for test_bin in $(TEST_BINS); do "$$test_bin"; done
 
 check: all test
