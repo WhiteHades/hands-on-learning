@@ -49,6 +49,8 @@ int main(void) {
   assert(!hol_safe_relative_path("/absolute"));
   assert(!hol_safe_relative_path("double//segment"));
   assert(!hol_safe_relative_path("windows\\path"));
+  assert(hol_version_supported("0.1.0"));
+  assert(!hol_version_supported("0.2.0"));
 
   char root[] = "/tmp/hol-core-XXXXXX";
   assert(mkdtemp(root) != NULL);
@@ -88,6 +90,23 @@ int main(void) {
   assert(text != NULL && strstr(text, "return 0") != NULL);
   free(text);
 
+  assert(unlink(path) == 0);
+  assert(rmdir(workspace) == 0);
+  char victim[4096];
+  (void)snprintf(victim, sizeof(victim), "%s/victim", root);
+  assert(mkdir(victim, 0700) == 0);
+  char sentinel[4096];
+  assert(hol_join_path(sentinel, sizeof(sentinel), victim, "sentinel", &error) == 0);
+  write_file(sentinel, "keep\n");
+  assert(symlink(victim, workspace) == 0);
+  assert(hol_workspace_reset(course, lesson, workspace, &error) == -1);
+  text = hol_read_text(sentinel, 1024U, &length, &error);
+  assert(text != NULL && strcmp(text, "keep\n") == 0);
+  free(text);
+  assert(unlink(workspace) == 0);
+  assert(unlink(sentinel) == 0);
+  assert(rmdir(victim) == 0);
+
   hol_state state = {0};
   (void)strcpy(state.course_id, "hol.test");
   (void)strcpy(state.lesson_id, "hello");
@@ -107,7 +126,20 @@ int main(void) {
   hol_course *demo = NULL;
   assert(hol_course_load("courses/demo.holcourse", &demo, &error) == 0);
   assert(demo != NULL && demo->lesson_count == 3U);
+  const hol_lesson *quiz = hol_course_lesson(demo, 2U);
+  assert(quiz != NULL && quiz->quiz_passing_score == 1U);
   hol_course_free(demo);
+
+  char hardlink[4096];
+  char license[4096];
+  (void)snprintf(license, sizeof(license), "%s/LICENSE", root);
+  (void)snprintf(hardlink, sizeof(hardlink), "%s/LICENSE.link", root);
+  assert(link(license, hardlink) == 0);
+  hol_course *invalid = NULL;
+  memset(&error, 0, sizeof(error));
+  assert(hol_course_load(root, &invalid, &error) == -1);
+  assert(invalid == NULL);
+  assert(unlink(hardlink) == 0);
 
   hol_course_free(course);
   char command[8192];

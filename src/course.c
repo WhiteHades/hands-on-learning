@@ -88,6 +88,11 @@ static int parse_quiz(json_object *quiz, hol_lesson *lesson, hol_error *error) {
     json_object *choices = required(question, "choices", json_type_array, error);
     if (id == NULL || prompt == NULL || answer == NULL || choices == NULL ||
         !hol_valid_id(id)) return -1;
+    for (size_t previous = 0U; previous < index; previous++)
+      if (strcmp(lesson->questions[previous].id, id) == 0) {
+        hol_error_set(error, HOL_ERR_SCHEMA, "duplicate quiz question id");
+        return -1;
+      }
     hol_quiz_question *target = &lesson->questions[index];
     if (copy_string(target->id, sizeof(target->id), id, "question id", error) < 0 ||
         copy_string(target->prompt, sizeof(target->prompt), prompt, "prompt", error) < 0 ||
@@ -95,11 +100,13 @@ static int parse_quiz(json_object *quiz, hol_lesson *lesson, hol_error *error) {
       return -1;
     }
     json_object *explanation = NULL;
-    if (json_object_object_get_ex(question, "explanation", &explanation) &&
-        json_object_is_type(explanation, json_type_string) &&
-        copy_string(target->explanation, sizeof(target->explanation),
-                    json_object_get_string(explanation), "explanation", error) < 0) {
-      return -1;
+    if (json_object_object_get_ex(question, "explanation", &explanation)) {
+      if (!json_object_is_type(explanation, json_type_string) ||
+          (size_t)json_object_get_string_len(explanation) !=
+            strlen(json_object_get_string(explanation)) ||
+          copy_string(target->explanation, sizeof(target->explanation),
+                      json_object_get_string(explanation), "explanation", error) < 0)
+        return -1;
     }
     size_t choice_count = json_object_array_length(choices);
     if (choice_count < 2U || choice_count > 10U) return -1;
@@ -112,6 +119,11 @@ static int parse_quiz(json_object *quiz, hol_lesson *lesson, hol_error *error) {
       const char *choice_id = required_string(choice, "id", error);
       const char *text = required_string(choice, "text", error);
       if (choice_id == NULL || text == NULL || !hol_valid_id(choice_id)) return -1;
+      for (size_t previous = 0U; previous < choice_index; previous++)
+        if (strcmp(target->choices[previous].id, choice_id) == 0) {
+          hol_error_set(error, HOL_ERR_SCHEMA, "duplicate quiz choice id");
+          return -1;
+        }
       if (strcmp(choice_id, answer) == 0) answer_found = true;
       if (copy_string(target->choices[choice_index].id,
                       sizeof(target->choices[choice_index].id), choice_id,
@@ -351,7 +363,8 @@ static int parse_lesson(json_object *object, hol_course *course,
       json_object *item = json_object_array_get_idx(media, index);
       if (!json_object_is_type(item, json_type_string)) return -1;
       const char *media_path = json_object_get_string(item);
-      if (!hol_safe_relative_path(media_path) ||
+      if ((size_t)json_object_get_string_len(item) != strlen(media_path) ||
+          !hol_safe_relative_path(media_path) ||
           validate_bundle_file(course, media_path, error) < 0) return -1;
       lesson->media_paths[index] = strdup(media_path);
       if (lesson->media_paths[index] == NULL) return -1;
