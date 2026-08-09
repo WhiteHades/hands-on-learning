@@ -1,0 +1,2 @@
+CREATE TABLE users(name TEXT NOT NULL);
+INSERT INTO users VALUES ('Ada');
