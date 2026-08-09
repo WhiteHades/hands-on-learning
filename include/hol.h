@@ -91,6 +91,7 @@ typedef struct {
   hol_runner_spec runner;
   hol_quiz_question *questions;
   size_t question_count;
+  size_t quiz_passing_score;
   char **media_paths;
   size_t media_count;
 } hol_lesson;
@@ -196,6 +197,7 @@ typedef struct {
 void hol_error_set(hol_error *error, hol_errc code, const char *format, ...)
   __attribute__((format(printf, 3, 4)));
 bool hol_safe_relative_path(const char *path);
+bool hol_valid_id(const char *id);
 int hol_join_path(char *output, size_t size, const char *root,
                   const char *relative, hol_error *error);
 int hol_atomic_write(const char *path, const char *data, size_t length,
@@ -206,6 +208,7 @@ char *hol_read_text(const char *path, size_t maximum, size_t *length,
                     hol_error *error);
 int hol_sha256_file(const char *path, char hexadecimal[65],
                     hol_error *error);
+bool hol_version_supported(const char *minimum_version);
 
 int hol_course_load(const char *root, hol_course **output, hol_error *error);
 const hol_lesson *hol_course_lesson(const hol_course *course, size_t index);

@@ -310,7 +310,7 @@ int hol_copy_file_if_missing(const char *source, const char *target,
                              hol_error *error) {
   struct stat existing;
   if (lstat(target, &existing) == 0) {
-    if (!S_ISREG(existing.st_mode)) {
+    if (!S_ISREG(existing.st_mode) || existing.st_nlink != 1) {
       hol_error_set(error, HOL_ERR_PATH, "workspace target is not a file");
       return -1;
     }
@@ -351,7 +351,7 @@ int hol_copy_file_if_missing(const char *source, const char *target,
   return 0;
 }
 
-static bool valid_id(const char *id) {
+bool hol_valid_id(const char *id) {
   size_t length = strlen(id);
   if (length == 0U || length > HOL_ID_MAX) return false;
   for (size_t index = 0U; index < length; index++) {
@@ -380,7 +380,45 @@ static json_object *required(json_object *parent, const char *name,
 static const char *required_string(json_object *parent, const char *name,
                                    hol_error *error) {
   json_object *value = required(parent, name, json_type_string, error);
-  return value != NULL ? json_object_get_string(value) : NULL;
+  if (value == NULL) return NULL;
+  const char *text = json_object_get_string(value);
+  if ((size_t)json_object_get_string_len(value) != strlen(text)) {
+    hol_error_set(error, HOL_ERR_SCHEMA, "field contains an embedded NUL: %s", name);
+    return NULL;
+  }
+  return text;
+}
+
+static bool parse_version(const char *version, unsigned parts[3]) {
+  const char *cursor = version;
+  for (size_t index = 0U; index < 3U; index++) {
+    if (*cursor < '0' || *cursor > '9') return false;
+    unsigned value = 0U;
+    while (*cursor >= '0' && *cursor <= '9') {
+      unsigned digit = (unsigned)(*cursor - '0');
+      if (value > (UINT32_MAX - digit) / 10U) return false;
+      value = value * 10U + digit;
+      cursor++;
+    }
+    parts[index] = value;
+    if (index < 2U) {
+      if (*cursor != '.') return false;
+      cursor++;
+    }
+  }
+  return *cursor == '\0';
+}
+
+bool hol_version_supported(const char *minimum_version) {
+  unsigned current[3];
+  unsigned minimum[3];
+  if (!parse_version(HOL_APP_VERSION, current) ||
+      !parse_version(minimum_version, minimum)) return false;
+  for (size_t index = 0U; index < 3U; index++) {
+    if (current[index] > minimum[index]) return true;
+    if (current[index] < minimum[index]) return false;
+  }
+  return true;
 }
 
 static int parse_file(json_object *object, hol_course_file *file,
@@ -408,15 +446,18 @@ static int parse_file(json_object *object, hol_course_file *file,
 
 static int parse_quiz(json_object *quiz, hol_lesson *lesson, hol_error *error) {
   json_object *questions = required(quiz, "questions", json_type_array, error);
-  if (questions == NULL) return -1;
+  json_object *passing_score = required(quiz, "passing_score", json_type_int, error);
+  if (questions == NULL || passing_score == NULL) return -1;
   size_t count = json_object_array_length(questions);
-  if (count == 0U || count > 100U) {
+  int64_t score = json_object_get_int64(passing_score);
+  if (count == 0U || count > 100U || score < 1 || (uint64_t)score > count) {
     hol_error_set(error, HOL_ERR_SCHEMA, "quiz question count is invalid");
     return -1;
   }
   lesson->questions = calloc(count, sizeof(*lesson->questions));
   if (lesson->questions == NULL) return -1;
   lesson->question_count = count;
+  lesson->quiz_passing_score = (size_t)score;
   for (size_t index = 0U; index < count; index++) {
     json_object *question = json_object_array_get_idx(questions, index);
     const char *id = required_string(question, "id", error);
@@ -424,7 +465,7 @@ static int parse_quiz(json_object *quiz, hol_lesson *lesson, hol_error *error) {
     const char *answer = required_string(question, "answer", error);
     json_object *choices = required(question, "choices", json_type_array, error);
     if (id == NULL || prompt == NULL || answer == NULL || choices == NULL ||
-        !valid_id(id)) return -1;
+        !hol_valid_id(id)) return -1;
     hol_quiz_question *target = &lesson->questions[index];
     if (copy_string(target->id, sizeof(target->id), id, "question id", error) < 0 ||
         copy_string(target->prompt, sizeof(target->prompt), prompt, "prompt", error) < 0 ||
@@ -448,7 +489,7 @@ static int parse_quiz(json_object *quiz, hol_lesson *lesson, hol_error *error) {
       json_object *choice = json_object_array_get_idx(choices, choice_index);
       const char *choice_id = required_string(choice, "id", error);
       const char *text = required_string(choice, "text", error);
-      if (choice_id == NULL || text == NULL || !valid_id(choice_id)) return -1;
+      if (choice_id == NULL || text == NULL || !hol_valid_id(choice_id)) return -1;
       if (strcmp(choice_id, answer) == 0) answer_found = true;
       if (copy_string(target->choices[choice_index].id,
                       sizeof(target->choices[choice_index].id), choice_id,
@@ -470,7 +511,7 @@ static int validate_bundle_file(const hol_course *course, const char *relative,
   char path[4096];
   if (hol_join_path(path, sizeof(path), course->root, relative, error) < 0) return -1;
   struct stat status;
-  if (lstat(path, &status) < 0 || !S_ISREG(status.st_mode)) {
+  if (lstat(path, &status) < 0 || !S_ISREG(status.st_mode) || status.st_nlink != 1) {
     hol_error_set(error, HOL_ERR_PATH, "bundle file is missing or unsafe: %s", relative);
     return -1;
   }
@@ -536,7 +577,7 @@ static int audit_directory(const hol_course *course, json_object *files,
         (void)closedir(directory);
         return -1;
       }
-    } else if (S_ISREG(status.st_mode)) {
+    } else if (S_ISREG(status.st_mode) && status.st_nlink == 1) {
       if (strcmp(child_relative, "course.json") == 0) continue;
       if (inventory_entry(files, child_relative) == NULL) {
         hol_error_set(error, HOL_ERR_CHECKSUM, "undeclared bundle file: %s",
@@ -578,6 +619,7 @@ static int validate_inventory(const hol_course *course, json_object *files,
     if (hol_join_path(absolute, sizeof(absolute), course->root, path, error) < 0) return -1;
     struct stat status;
     if (lstat(absolute, &status) < 0 || !S_ISREG(status.st_mode) ||
+        status.st_nlink != 1 ||
         (uint64_t)status.st_size != json_object_get_uint64(bytes)) {
       hol_error_set(error, HOL_ERR_CHECKSUM, "bundle size mismatch: %s", path);
       return -1;
@@ -600,7 +642,7 @@ static int parse_lesson(json_object *object, hol_course *course,
   const char *title = required_string(object, "title", error);
   const char *kind = required_string(object, "kind", error);
   const char *content = required_string(object, "content", error);
-  if (id == NULL || title == NULL || kind == NULL || content == NULL || !valid_id(id) ||
+  if (id == NULL || title == NULL || kind == NULL || content == NULL || !hol_valid_id(id) ||
       !hol_safe_relative_path(content)) return -1;
   if (strcmp(kind, "reading") == 0) lesson->kind = HOL_LESSON_READING;
   else if (strcmp(kind, "exercise") == 0) lesson->kind = HOL_LESSON_EXERCISE;
@@ -740,7 +782,11 @@ int hol_course_load(const char *root, hol_course **output, hol_error *error) {
   json_object *chapters = required(root_object, "chapters", json_type_array, error);
   if (schema == NULL || id == NULL || version == NULL || minimum == NULL || title == NULL ||
       description == NULL || license == NULL || files == NULL || chapters == NULL ||
-      json_object_get_int(schema) != 1 || !valid_id(id)) goto failure;
+      json_object_get_int(schema) != 1 || !hol_valid_id(id)) goto failure;
+  if (!hol_version_supported(minimum)) {
+    hol_error_set(error, HOL_ERR_UNSUPPORTED, "course requires a newer application version");
+    goto failure;
+  }
   const char *spdx = required_string(license, "spdx", error);
   const char *license_file = required_string(license, "file", error);
   const char *attribution = required_string(license, "attribution", error);
@@ -772,13 +818,14 @@ int hol_course_load(const char *root, hol_course **output, hol_error *error) {
     const char *chapter_title = required_string(chapter, "title", error);
     json_object *lessons = required(chapter, "lessons", json_type_array, error);
     if (chapter_id == NULL || chapter_title == NULL || lessons == NULL ||
-        !valid_id(chapter_id)) goto failure;
+        !hol_valid_id(chapter_id)) goto failure;
     hol_chapter *target = &course->chapters[chapter_index];
     if (copy_string(target->id, sizeof(target->id), chapter_id, "chapter id", error) < 0 ||
         copy_string(target->title, sizeof(target->title), chapter_title,
                     "chapter title", error) < 0) goto failure;
     size_t lesson_count = json_object_array_length(lessons);
-    if (lesson_count == 0U || lesson_count > 10000U) goto failure;
+    if (lesson_count == 0U || lesson_count > 10000U ||
+        course->lesson_count > 10000U - lesson_count) goto failure;
     target->lessons = calloc(lesson_count, sizeof(*target->lessons));
     if (target->lessons == NULL) goto failure;
     target->lesson_count = lesson_count;
@@ -786,6 +833,26 @@ int hol_course_load(const char *root, hol_course **output, hol_error *error) {
     for (size_t lesson_index = 0U; lesson_index < lesson_count; lesson_index++) {
       if (parse_lesson(json_object_array_get_idx(lessons, lesson_index), course,
                        &target->lessons[lesson_index], error) < 0) goto failure;
+    }
+  }
+  for (size_t chapter = 0U; chapter < course->chapter_count; chapter++) {
+    for (size_t previous = 0U; previous < chapter; previous++)
+      if (strcmp(course->chapters[chapter].id, course->chapters[previous].id) == 0) {
+        hol_error_set(error, HOL_ERR_SCHEMA, "duplicate chapter id");
+        goto failure;
+      }
+    for (size_t lesson_index = 0U;
+         lesson_index < course->chapters[chapter].lesson_count; lesson_index++) {
+      const char *lesson_id = course->chapters[chapter].lessons[lesson_index].id;
+      size_t seen = 0U;
+      for (size_t candidate = 0U; candidate < course->lesson_count; candidate++) {
+        const hol_lesson *other = hol_course_lesson(course, candidate);
+        if (other != NULL && strcmp(other->id, lesson_id) == 0) seen++;
+      }
+      if (seen != 1U) {
+        hol_error_set(error, HOL_ERR_SCHEMA, "duplicate lesson id");
+        goto failure;
+      }
     }
   }
   json_object_put(root_object);
@@ -884,7 +951,7 @@ int hol_state_load(const char *path, hol_state *state, hol_error *error) {
       const char *lesson_id = required_string(entry, "lesson_id", error);
       json_object *completed = required(entry, "completed", json_type_boolean, error);
       if (course_id == NULL || lesson_id == NULL || completed == NULL ||
-          !valid_id(course_id) || !valid_id(lesson_id) ||
+          !hol_valid_id(course_id) || !hol_valid_id(lesson_id) ||
           copy_string(state->progress[index].course_id,
                       sizeof(state->progress[index].course_id), course_id,
                       "progress course id", error) < 0 ||
@@ -944,7 +1011,7 @@ bool hol_state_completed(const hol_state *state, const char *course_id,
 
 int hol_state_mark_completed(hol_state *state, const char *course_id,
                              const char *lesson_id, hol_error *error) {
-  if (!valid_id(course_id) || !valid_id(lesson_id)) return -1;
+  if (!hol_valid_id(course_id) || !hol_valid_id(lesson_id)) return -1;
   for (size_t index = 0U; index < state->progress_count; index++) {
     if (strcmp(state->progress[index].course_id, course_id) == 0 &&
         strcmp(state->progress[index].lesson_id, lesson_id) == 0) {
@@ -984,6 +1051,11 @@ int hol_workspace_ensure(const hol_course *course, const hol_lesson *lesson,
     hol_error_set(error, HOL_ERR_IO, "cannot create lesson workspace");
     return -1;
   }
+  struct stat status;
+  if (lstat(workspace, &status) < 0 || !S_ISDIR(status.st_mode)) {
+    hol_error_set(error, HOL_ERR_PATH, "lesson workspace is not a directory");
+    return -1;
+  }
   for (size_t index = 0U; index < lesson->file_count; index++) {
     char source[4096];
     char target[4096];
@@ -997,9 +1069,18 @@ int hol_workspace_ensure(const hol_course *course, const hol_lesson *lesson,
 }
 
 static int remove_tree(const char *path, hol_error *error) {
+  struct stat root_status;
+  if (lstat(path, &root_status) < 0) {
+    if (errno == ENOENT) return 0;
+    hol_error_set(error, HOL_ERR_IO, "cannot inspect workspace for reset");
+    return -1;
+  }
+  if (!S_ISDIR(root_status.st_mode)) {
+    hol_error_set(error, HOL_ERR_PATH, "lesson workspace is not a directory");
+    return -1;
+  }
   DIR *directory = opendir(path);
   if (directory == NULL) {
-    if (errno == ENOENT) return 0;
     hol_error_set(error, HOL_ERR_IO, "cannot open workspace for reset");
     return -1;
   }
