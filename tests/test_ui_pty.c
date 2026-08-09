@@ -71,7 +71,7 @@ static pid_t launch_ui(int master, const char *slave_name, const char *home) {
   assert(setenv("XDG_DATA_HOME", data, 1) == 0);
   assert(setenv("XDG_STATE_HOME", state, 1) == 0);
   execl("build/hands-on-learning", "build/hands-on-learning", "--course",
-        "courses/demo.holcourse", (char *)NULL);
+        "build/hol.demo-c-1.0.0.imscc", (char *)NULL);
   _exit(127);
 }
 
