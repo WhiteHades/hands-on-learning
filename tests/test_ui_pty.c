@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -64,20 +65,45 @@ static pid_t launch_ui(int master, const char *slave_name, const char *home) {
   (void)close(master);
   char data[4096];
   char state[4096];
+  char path[4096];
+  char editor[4096];
   assert(snprintf(data, sizeof(data), "%s/data", home) > 0);
   assert(snprintf(state, sizeof(state), "%s/state", home) > 0);
+  assert(snprintf(path, sizeof(path), "%s/bin", home) > 0);
+  assert(snprintf(editor, sizeof(editor), "%s/fake-editor", home) > 0);
   assert(setenv("HOME", home, 1) == 0);
   assert(setenv("TERM", "xterm-256color", 1) == 0);
   assert(setenv("XDG_DATA_HOME", data, 1) == 0);
   assert(setenv("XDG_STATE_HOME", state, 1) == 0);
+  assert(setenv("PATH", path, 1) == 0);
+  assert(setenv("EDITOR", editor, 1) == 0);
   execl("build/hands-on-learning", "build/hands-on-learning", "--course",
-        "build/test-course.imscc", (char *)NULL);
+        "build/test-course.imscc", "--exercise-profile",
+        "build/test-course.profile.json", (char *)NULL);
   _exit(127);
 }
 
 int main(void) {
   char home[] = "/tmp/hol-ui-XXXXXX";
   assert(mkdtemp(home) != NULL);
+  char command[16384];
+  assert(snprintf(command, sizeof(command),
+                  "mkdir -p '%s/bin' '%s/data/hands-on-learning/courses' && "
+                  "cp build/test-course.imscc '%s/data/hands-on-learning/courses/managed.imscc' && "
+                  "cp build/test-course.profile.json '%s/data/hands-on-learning/courses/managed.profile.json'",
+                  home, home, home, home) > 0);
+  assert(system(command) == 0);
+  char editor_path[4096];
+  assert(snprintf(editor_path, sizeof(editor_path), "%s/fake-editor", home) > 0);
+  static const char editor_script[] =
+    "#!/bin/sh\n"
+    "printf '%s\\n' 'const char *lesson_greeting(void) { return \"Hello, learner!\"; }' > \"$2\"\n";
+  hol_error error = {0};
+  assert(hol_atomic_write(editor_path, editor_script, strlen(editor_script), &error) == 0);
+  assert(chmod(editor_path, 0700) == 0);
+  char bwrap_path[4096];
+  assert(snprintf(bwrap_path, sizeof(bwrap_path), "%s/bin/bwrap", home) > 0);
+  assert(symlink("/usr/bin/bwrap", bwrap_path) == 0);
   int master = posix_openpt(O_RDWR | O_NOCTTY);
   assert(master >= 0);
   assert(grantpt(master) == 0);
@@ -90,14 +116,50 @@ int main(void) {
 
   read_until(master, "Hands-on Learning");
   write_all(master, "?");
-  read_until(master, "KEYS");
+  read_until(master, "Reset");
   write_all(master, "\033");
   size = (struct winsize){.ws_row = 40, .ws_col = 120};
   assert(ioctl(master, TIOCSWINSZ, &size) == 0);
   assert(kill(process, SIGWINCH) == 0);
+  write_all(master, " ll/C Greeting\r\r");
+  read_until(master, "return \"TODO\"");
+  write_all(master, "e");
+  read_until(master, "Hello, learner!");
+  write_all(master, " r");
+  read_until(master, "RUN FINISHED");
+  char exercise_path[4096];
+  assert(snprintf(exercise_path, sizeof(exercise_path),
+                  "%s/data/hands-on-learning/workspaces/test.course/c-greeting/greeting.c",
+                  home) > 0);
+  static const char wrong[] =
+    "const char *lesson_greeting(void) { return \"Wrong\"; }\n";
+  static const char correct[] =
+    "const char *lesson_greeting(void) { return \"Hello, learner!\"; }\n";
+  assert(hol_atomic_write(exercise_path, wrong, strlen(wrong), &error) == 0);
+  write_all(master, " t");
+  read_until(master, "lesson_greeting returned the wrong text.");
+  assert(hol_atomic_write(exercise_path, correct, strlen(correct), &error) == 0);
+  write_all(master, " t");
+  read_until(master, "CHECK PASSED");
+  write_all(master, " x");
+  read_until(master, "Reset this lesson?");
+  write_all(master, "y");
+  read_until(master, "Lesson workspace reset.");
+  char *starter = hol_read_text(exercise_path, HOL_OUTPUT_MAX, NULL, &error);
+  assert(starter != NULL && strstr(starter, "TODO") != NULL);
+  free(starter);
+  assert(unlink(bwrap_path) == 0);
+  write_all(master, " r");
+  read_until(master, "Bubblewrap (bwrap) is required");
   write_all(master, " lc");
   read_until(master, "COURSES");
-  write_all(master, "\033 ll/Knowledge\r\r");
+  write_all(master, "j\r");
+  read_until(master, "Opened content-only");
+  write_all(master, " ll/C Greeting\r\r");
+  read_until(master, "Change lesson_greeting to return Hello, learner!");
+  write_all(master, " r");
+  read_until(master, "This lesson has no runnable workspace.");
+  write_all(master, " ll/Knowledge\r\r");
   struct timespec pause = {.tv_nsec = 200000000L};
   (void)nanosleep(&pause, NULL);
   write_all(master, "\033");
@@ -129,13 +191,15 @@ int main(void) {
   char state_path[4096];
   assert(snprintf(state_path, sizeof(state_path),
                   "%s/state/hands-on-learning/state.json", home) > 0);
-  hol_error error = {0};
   char *state = hol_read_text(state_path, 64U * 1024U, NULL, &error);
   assert(state != NULL);
   assert(strstr(state, "\"course_id\":\"test.course\"") != NULL);
   assert(strstr(state, "\"lesson_id\":\"knowledge-check\"") != NULL);
   free(state);
-  char command[8192];
+  hol_state loaded = {0};
+  assert(hol_state_load(state_path, &loaded, &error) == 0);
+  assert(hol_state_completed(&loaded, "test.course", "c-greeting"));
+  hol_state_free(&loaded);
   assert(snprintf(command, sizeof(command), "rm -rf -- '%s'", home) > 0);
   assert(system(command) == 0);
   puts("UI PTY tests passed");
