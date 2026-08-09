@@ -1,19 +1,25 @@
 # Hands-on Learning
 
-Read portable courses and take quizzes in one terminal app.
+Study the Boot.dev C and SQL courses in one terminal app.
 
-Hands-on Learning is a C23 reader for 1EdTech Common Cartridge 1.3 packages. It uses Vim keybindings and stores progress locally.
+Hands-on Learning uses Vim keybindings and stores your progress locally.
 
 ## Get started
 
-Install GCC, ncursesw, json-c, libcurl, libxml2, libarchive, and zip. Then run:
+On Ubuntu, install the required libraries:
 
 ```bash
-make check
+sudo apt install build-essential libncurses-dev libjson-c-dev libcurl4-openssl-dev libxml2-dev libarchive-dev zip
+```
+
+Build and start the app:
+
+```bash
+make
 build/hands-on-learning
 ```
 
-The app starts with a three lesson IMS Common Cartridge demo.
+Choose the C or SQL course from the menu. The app downloads it once and opens it. Later launches reuse the downloaded copy.
 
 ## Use the app
 
@@ -24,26 +30,23 @@ The app starts with a three lesson IMS Common Cartridge demo.
 - Press `?` to see all keybindings
 - Press `q` to close a popup or quit
 
-## Add a course
+## Install the command
 
-List the free courses:
-
-```bash
-build/hands-on-learning catalog list
-```
-
-Install a course:
+To run the app as `hands-on-learning` from any directory:
 
 ```bash
-build/hands-on-learning catalog install bootdev.learn-sql
+sudo make install
+hands-on-learning
 ```
 
-Open any local Common Cartridge package:
+## Open another course
+
+The app also reads local IMS Common Cartridge 1.3 packages:
 
 ```bash
 build/hands-on-learning --course path/to/course.imscc
 ```
 
-Imported courses show Boot.dev as their source and author. The included demo is original Hands-on Learning content.
+The included C and SQL courses show Boot.dev as their source and author.
 
 See [`docs/course-schema.md`](docs/course-schema.md) for the supported standards profile.
