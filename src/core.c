@@ -11,6 +11,153 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+typedef struct {
+  uint32_t state[8];
+  uint64_t bit_length;
+  unsigned char block[64];
+  size_t block_length;
+} sha256_context;
+
+static const uint32_t sha256_constants[64] = {
+  0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U,
+  0x923f82a4U, 0xab1c5ed5U, 0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U,
+  0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U, 0xe49b69c1U, 0xefbe4786U,
+  0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
+  0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U, 0xc6e00bf3U, 0xd5a79147U,
+  0x06ca6351U, 0x14292967U, 0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U,
+  0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U, 0xa2bfe8a1U, 0xa81a664bU,
+  0xc24b8b70U, 0xc76c51a3U, 0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
+  0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U, 0x391c0cb3U, 0x4ed8aa4aU,
+  0x5b9cca4fU, 0x682e6ff3U, 0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U,
+  0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U,
+};
+
+static uint32_t rotate_right(uint32_t value, unsigned count) {
+  return (value >> count) | (value << (32U - count));
+}
+
+static void sha256_transform(sha256_context *context) {
+  uint32_t words[64];
+  for (size_t index = 0U; index < 16U; index++) {
+    size_t offset = index * 4U;
+    words[index] = (uint32_t)context->block[offset] << 24U |
+                   (uint32_t)context->block[offset + 1U] << 16U |
+                   (uint32_t)context->block[offset + 2U] << 8U |
+                   (uint32_t)context->block[offset + 3U];
+  }
+  for (size_t index = 16U; index < 64U; index++) {
+    uint32_t first = rotate_right(words[index - 15U], 7U) ^
+                     rotate_right(words[index - 15U], 18U) ^
+                     (words[index - 15U] >> 3U);
+    uint32_t second = rotate_right(words[index - 2U], 17U) ^
+                      rotate_right(words[index - 2U], 19U) ^
+                      (words[index - 2U] >> 10U);
+    words[index] = words[index - 16U] + first + words[index - 7U] + second;
+  }
+  uint32_t a = context->state[0];
+  uint32_t b = context->state[1];
+  uint32_t c = context->state[2];
+  uint32_t d = context->state[3];
+  uint32_t e = context->state[4];
+  uint32_t f = context->state[5];
+  uint32_t g = context->state[6];
+  uint32_t h = context->state[7];
+  for (size_t index = 0U; index < 64U; index++) {
+    uint32_t sum1 = rotate_right(e, 6U) ^ rotate_right(e, 11U) ^ rotate_right(e, 25U);
+    uint32_t choice = (e & f) ^ (~e & g);
+    uint32_t temporary1 = h + sum1 + choice + sha256_constants[index] + words[index];
+    uint32_t sum0 = rotate_right(a, 2U) ^ rotate_right(a, 13U) ^ rotate_right(a, 22U);
+    uint32_t majority = (a & b) ^ (a & c) ^ (b & c);
+    uint32_t temporary2 = sum0 + majority;
+    h = g;
+    g = f;
+    f = e;
+    e = d + temporary1;
+    d = c;
+    c = b;
+    b = a;
+    a = temporary1 + temporary2;
+  }
+  context->state[0] += a;
+  context->state[1] += b;
+  context->state[2] += c;
+  context->state[3] += d;
+  context->state[4] += e;
+  context->state[5] += f;
+  context->state[6] += g;
+  context->state[7] += h;
+}
+
+static void sha256_init(sha256_context *context) {
+  *context = (sha256_context){
+    .state = {0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
+              0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U},
+  };
+}
+
+static void sha256_update(sha256_context *context, const unsigned char *data,
+                          size_t length) {
+  for (size_t index = 0U; index < length; index++) {
+    context->block[context->block_length++] = data[index];
+    if (context->block_length == sizeof(context->block)) {
+      sha256_transform(context);
+      context->bit_length += 512U;
+      context->block_length = 0U;
+    }
+  }
+}
+
+static void sha256_finish(sha256_context *context, unsigned char digest[32]) {
+  context->bit_length += (uint64_t)context->block_length * 8U;
+  context->block[context->block_length++] = 0x80U;
+  if (context->block_length > 56U) {
+    while (context->block_length < 64U) context->block[context->block_length++] = 0U;
+    sha256_transform(context);
+    context->block_length = 0U;
+  }
+  while (context->block_length < 56U) context->block[context->block_length++] = 0U;
+  for (size_t index = 0U; index < 8U; index++)
+    context->block[63U - index] = (unsigned char)(context->bit_length >> (index * 8U));
+  sha256_transform(context);
+  for (size_t index = 0U; index < 8U; index++) {
+    digest[index * 4U] = (unsigned char)(context->state[index] >> 24U);
+    digest[index * 4U + 1U] = (unsigned char)(context->state[index] >> 16U);
+    digest[index * 4U + 2U] = (unsigned char)(context->state[index] >> 8U);
+    digest[index * 4U + 3U] = (unsigned char)context->state[index];
+  }
+}
+
+static int sha256_file(const char *path, char hexadecimal[65], hol_error *error) {
+  int descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0) {
+    hol_error_set(error, HOL_ERR_IO, "cannot hash %s", path);
+    return -1;
+  }
+  sha256_context context;
+  sha256_init(&context);
+  unsigned char buffer[64U * 1024U];
+  for (;;) {
+    ssize_t count = read(descriptor, buffer, sizeof(buffer));
+    if (count < 0 && errno == EINTR) continue;
+    if (count < 0) {
+      (void)close(descriptor);
+      return -1;
+    }
+    if (count == 0) break;
+    sha256_update(&context, buffer, (size_t)count);
+  }
+  (void)close(descriptor);
+  unsigned char digest[32];
+  sha256_finish(&context, digest);
+  static const char digits[] = "0123456789abcdef";
+  for (size_t index = 0U; index < sizeof(digest); index++) {
+    hexadecimal[index * 2U] = digits[digest[index] >> 4U];
+    hexadecimal[index * 2U + 1U] = digits[digest[index] & 0x0fU];
+  }
+  hexadecimal[64] = '\0';
+  return 0;
+}
+
 static int copy_string(char *target, size_t capacity, const char *value,
                        const char *field, hol_error *error) {
   size_t length = strlen(value);
@@ -330,6 +477,123 @@ static int validate_bundle_file(const hol_course *course, const char *relative,
   return 0;
 }
 
+static bool valid_sha256(const char *value) {
+  if (strlen(value) != 64U) return false;
+  for (size_t index = 0U; index < 64U; index++)
+    if (!((value[index] >= '0' && value[index] <= '9') ||
+          (value[index] >= 'a' && value[index] <= 'f'))) return false;
+  return true;
+}
+
+static json_object *inventory_entry(json_object *files, const char *path) {
+  size_t count = json_object_array_length(files);
+  for (size_t index = 0U; index < count; index++) {
+    json_object *entry = json_object_array_get_idx(files, index);
+    json_object *value = NULL;
+    if (json_object_object_get_ex(entry, "path", &value) &&
+        json_object_is_type(value, json_type_string) &&
+        strcmp(json_object_get_string(value), path) == 0) return entry;
+  }
+  return NULL;
+}
+
+static int audit_directory(const hol_course *course, json_object *files,
+                           const char *relative, size_t *count,
+                           hol_error *error) {
+  char directory_path[4096];
+  if (relative[0] == '\0') {
+    if (copy_string(directory_path, sizeof(directory_path), course->root,
+                    "course root", error) < 0) return -1;
+  } else if (hol_join_path(directory_path, sizeof(directory_path), course->root,
+                           relative, error) < 0) return -1;
+  DIR *directory = opendir(directory_path);
+  if (directory == NULL) return -1;
+  struct dirent *item;
+  while ((item = readdir(directory)) != NULL) {
+    if (strcmp(item->d_name, ".") == 0 || strcmp(item->d_name, "..") == 0) continue;
+    char child_relative[HOL_PATH_MAX + 1];
+    int written = relative[0] == '\0'
+      ? snprintf(child_relative, sizeof(child_relative), "%s", item->d_name)
+      : snprintf(child_relative, sizeof(child_relative), "%s/%s", relative, item->d_name);
+    if (written < 0 || (size_t)written >= sizeof(child_relative) ||
+        !hol_safe_relative_path(child_relative)) {
+      (void)closedir(directory);
+      return -1;
+    }
+    char child_path[4096];
+    if (hol_join_path(child_path, sizeof(child_path), course->root, child_relative,
+                      error) < 0) {
+      (void)closedir(directory);
+      return -1;
+    }
+    struct stat status;
+    if (lstat(child_path, &status) < 0) {
+      (void)closedir(directory);
+      return -1;
+    }
+    if (S_ISDIR(status.st_mode)) {
+      if (audit_directory(course, files, child_relative, count, error) < 0) {
+        (void)closedir(directory);
+        return -1;
+      }
+    } else if (S_ISREG(status.st_mode)) {
+      if (strcmp(child_relative, "course.json") == 0) continue;
+      if (inventory_entry(files, child_relative) == NULL) {
+        hol_error_set(error, HOL_ERR_CHECKSUM, "undeclared bundle file: %s",
+                      child_relative);
+        (void)closedir(directory);
+        return -1;
+      }
+      (*count)++;
+    } else {
+      hol_error_set(error, HOL_ERR_PATH, "bundle contains a link or special file");
+      (void)closedir(directory);
+      return -1;
+    }
+  }
+  (void)closedir(directory);
+  return 0;
+}
+
+static int validate_inventory(const hol_course *course, json_object *files,
+                              hol_error *error) {
+  size_t file_count = json_object_array_length(files);
+  if (file_count == 0U || file_count > 100000U) return -1;
+  for (size_t index = 0U; index < file_count; index++) {
+    json_object *entry = json_object_array_get_idx(files, index);
+    const char *path = required_string(entry, "path", error);
+    const char *expected = required_string(entry, "sha256", error);
+    json_object *bytes = required(entry, "bytes", json_type_int, error);
+    if (path == NULL || expected == NULL || bytes == NULL ||
+        !hol_safe_relative_path(path) || !valid_sha256(expected) ||
+        json_object_get_int64(bytes) < 0) return -1;
+    for (size_t previous = 0U; previous < index; previous++) {
+      json_object *other = json_object_array_get_idx(files, previous);
+      json_object *other_path = NULL;
+      (void)json_object_object_get_ex(other, "path", &other_path);
+      if (other_path != NULL && strcmp(json_object_get_string(other_path), path) == 0)
+        return -1;
+    }
+    char absolute[4096];
+    if (hol_join_path(absolute, sizeof(absolute), course->root, path, error) < 0) return -1;
+    struct stat status;
+    if (lstat(absolute, &status) < 0 || !S_ISREG(status.st_mode) ||
+        (uint64_t)status.st_size != json_object_get_uint64(bytes)) {
+      hol_error_set(error, HOL_ERR_CHECKSUM, "bundle size mismatch: %s", path);
+      return -1;
+    }
+    char actual[65];
+    if (sha256_file(absolute, actual, error) < 0 || strcmp(actual, expected) != 0) {
+      hol_error_set(error, HOL_ERR_CHECKSUM, "bundle checksum mismatch: %s", path);
+      return -1;
+    }
+  }
+  size_t discovered = 0U;
+  if (audit_directory(course, files, "", &discovered, error) < 0 ||
+      discovered != file_count) return -1;
+  return 0;
+}
+
 static int parse_lesson(json_object *object, hol_course *course,
                         hol_lesson *lesson, hol_error *error) {
   const char *id = required_string(object, "id", error);
@@ -468,9 +732,10 @@ int hol_course_load(const char *root, hol_course **output, hol_error *error) {
   const char *title = required_string(root_object, "title", error);
   const char *description = required_string(root_object, "description", error);
   json_object *license = required(root_object, "license", json_type_object, error);
+  json_object *files = required(root_object, "files", json_type_array, error);
   json_object *chapters = required(root_object, "chapters", json_type_array, error);
   if (schema == NULL || id == NULL || version == NULL || minimum == NULL || title == NULL ||
-      description == NULL || license == NULL || chapters == NULL ||
+      description == NULL || license == NULL || files == NULL || chapters == NULL ||
       json_object_get_int(schema) != 1 || !valid_id(id)) goto failure;
   const char *spdx = required_string(license, "spdx", error);
   const char *license_file = required_string(license, "file", error);
@@ -490,6 +755,7 @@ int hol_course_load(const char *root, hol_course **output, hol_error *error) {
                   "license file", error) < 0 ||
       copy_string(course->attribution, sizeof(course->attribution), attribution,
                   "attribution", error) < 0 ||
+      validate_inventory(course, files, error) < 0 ||
       validate_bundle_file(course, license_file, error) < 0) goto failure;
   size_t chapter_count = json_object_array_length(chapters);
   if (chapter_count == 0U || chapter_count > 256U) goto failure;
