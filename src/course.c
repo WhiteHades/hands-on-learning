@@ -6,9 +6,11 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <json-c/json.h>
 #include <libxml/HTMLparser.h>
 #include <libxml/parser.h>
 #include <libxml/tree.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -207,6 +209,373 @@ static bool bounded_regular_file(const char *path, uint64_t maximum) {
          (uint64_t)status.st_size <= maximum;
 }
 
+static int attribute(xmlNode *node, const char *name, char *target, size_t capacity,
+                     hol_error *error);
+static int resource_by_id(xmlNode *resources, const char *identifier,
+                          xmlNode **found, hol_error *error);
+
+static bool digest_string(const char *value) {
+  if (strlen(value) != 64U) return false;
+  for (size_t index = 0U; index < 64U; index++)
+    if (!((value[index] >= '0' && value[index] <= '9') ||
+          (value[index] >= 'a' && value[index] <= 'f'))) return false;
+  return true;
+}
+
+static json_object *json_required(json_object *parent, const char *name,
+                                  enum json_type type, hol_error *error) {
+  json_object *value = NULL;
+  if (!json_object_object_get_ex(parent, name, &value) ||
+      !json_object_is_type(value, type)) {
+    hol_error_set(error, HOL_ERR_SCHEMA, "invalid exercise profile field: %s", name);
+    return NULL;
+  }
+  return value;
+}
+
+static bool name_allowed(const char *name, const char *const names[], size_t count) {
+  for (size_t index = 0U; index < count; index++)
+    if (strcmp(name, names[index]) == 0) return true;
+  return false;
+}
+
+static int json_exact_keys(json_object *object, const char *const names[], size_t count,
+                           const char *context, hol_error *error) {
+  if (!json_object_is_type(object, json_type_object)) {
+    hol_error_set(error, HOL_ERR_SCHEMA, "invalid exercise profile %s fields", context);
+    return -1;
+  }
+  json_object_object_foreach(object, name, value) {
+    (void)value;
+    if (!name_allowed(name, names, count)) {
+      hol_error_set(error, HOL_ERR_SCHEMA, "unsupported exercise profile field: %s", name);
+      return -1;
+    }
+  }
+  if ((size_t)json_object_object_length(object) != count) {
+    hol_error_set(error, HOL_ERR_SCHEMA, "invalid exercise profile %s fields", context);
+    return -1;
+  }
+  return 0;
+}
+
+static int json_string_field(char *target, size_t capacity, json_object *parent,
+                             const char *name, hol_error *error) {
+  json_object *value = json_required(parent, name, json_type_string, error);
+  if (value == NULL) return -1;
+  const char *text = json_object_get_string(value);
+  size_t length = strlen(text);
+  if ((size_t)json_object_get_string_len(value) != length)
+    return -1;
+  return copy_string(target, capacity, text, name, error);
+}
+
+static hol_lesson *lesson_by_id(hol_course *course, const char *id) {
+  hol_lesson *found = NULL;
+  for (size_t chapter = 0U; chapter < course->chapter_count; chapter++)
+    for (size_t lesson = 0U; lesson < course->chapters[chapter].lesson_count; lesson++)
+      if (strcmp(course->chapters[chapter].lessons[lesson].id, id) == 0) {
+        if (found != NULL) return NULL;
+        found = &course->chapters[chapter].lessons[lesson];
+      }
+  return found;
+}
+
+static int resource_file_by_path(xmlNode *resource, const char *path,
+                                 xmlNode **found, size_t *file_count,
+                                 hol_error *error) {
+  *found = NULL;
+  if (file_count != NULL) *file_count = 0U;
+  for (xmlNode *file = resource != NULL ? resource->children : NULL;
+       file != NULL; file = file->next) {
+    if (file->type != XML_ELEMENT_NODE ||
+        strcmp((const char *)file->name, "file") != 0) continue;
+    if (file->ns == NULL ||
+        strcmp((const char *)file->ns->href, manifest_namespace) != 0) {
+      hol_error_set(error, HOL_ERR_SCHEMA,
+                    "Common Cartridge file uses a foreign namespace");
+      return -1;
+    }
+    if (file_count != NULL) (*file_count)++;
+    xmlChar *href = xmlGetProp(file, (const xmlChar *)"href");
+    if (href == NULL) {
+      hol_error_set(error, HOL_ERR_SCHEMA,
+                    "Common Cartridge file is missing href");
+      return -1;
+    }
+    bool matches = path == NULL || strcmp((const char *)href, path) == 0;
+    xmlFree(href);
+    if (matches) {
+      if (path != NULL && *found != NULL) {
+        hol_error_set(error, HOL_ERR_SCHEMA,
+                      "duplicate Common Cartridge file path: %s", path);
+        return -1;
+      }
+      *found = file;
+    }
+  }
+  if (*found == NULL) {
+    hol_error_set(error, HOL_ERR_SCHEMA,
+                  "resource does not declare Common Cartridge file: %s",
+                  path != NULL ? path : "<any>");
+    return -1;
+  }
+  return 0;
+}
+
+static int find_item_by_id(xmlNode *node, const char *identifier,
+                           xmlNode **found) {
+  for (xmlNode *current = node != NULL ? node->children : NULL;
+       current != NULL; current = current->next) {
+    if (current->type != XML_ELEMENT_NODE || current->ns == NULL ||
+        strcmp((const char *)current->ns->href, manifest_namespace) != 0) continue;
+    if (strcmp((const char *)current->name, "item") == 0) {
+      xmlChar *value = xmlGetProp(current, (const xmlChar *)"identifier");
+      bool matches = value != NULL && strcmp((const char *)value, identifier) == 0;
+      xmlFree(value);
+      if (matches) {
+        if (*found != NULL) return -1;
+        *found = current;
+      }
+    }
+    if (find_item_by_id(current, identifier, found) < 0) return -1;
+  }
+  return 0;
+}
+
+static int parse_profile_file(const hol_course *course, xmlNode *resource,
+                              json_object *object, hol_course_file *file,
+                              hol_error *error) {
+  static const char *const keys[] = {
+    "source", "target", "role", "syntax", "phase", "sha256",
+  };
+  char role[16];
+  char phase[16];
+  if (json_exact_keys(object, keys, sizeof(keys) / sizeof(keys[0]), "file", error) < 0 ||
+      json_string_field(file->source, sizeof(file->source), object, "source", error) < 0 ||
+      json_string_field(file->target, sizeof(file->target), object, "target", error) < 0 ||
+      json_string_field(role, sizeof(role), object, "role", error) < 0 ||
+      json_string_field(file->syntax, sizeof(file->syntax), object, "syntax", error) < 0 ||
+      json_string_field(phase, sizeof(phase), object, "phase", error) < 0 ||
+      json_string_field(file->sha256, sizeof(file->sha256), object, "sha256", error) < 0 ||
+      !hol_safe_relative_path(file->source) || !hol_safe_relative_path(file->target) ||
+      !digest_string(file->sha256)) {
+    if (error != NULL && error->message[0] == '\0')
+      hol_error_set(error, HOL_ERR_SCHEMA, "invalid exercise profile file declaration");
+    return -1;
+  }
+  xmlNode *declared_file = NULL;
+  if (resource_file_by_path(resource, file->source, &declared_file, NULL, error) < 0)
+    return -1;
+  if (strcmp(role, "editable") == 0) file->role = HOL_FILE_EDITABLE;
+  else if (strcmp(role, "readonly") == 0) file->role = HOL_FILE_READONLY;
+  else if (strcmp(role, "hidden") == 0) file->role = HOL_FILE_HIDDEN;
+  else return -1;
+  if (strcmp(phase, "run") == 0) file->phase = HOL_PHASE_RUN;
+  else if (strcmp(phase, "check") == 0) file->phase = HOL_PHASE_CHECK;
+  else if (strcmp(phase, "both") == 0) file->phase = HOL_PHASE_BOTH;
+  else return -1;
+  if (file->role == HOL_FILE_EDITABLE && file->phase != HOL_PHASE_BOTH) return -1;
+  char path[4096];
+  char actual[65];
+  if (hol_join_path(path, sizeof(path), course->root, file->source, error) < 0 ||
+      !bounded_regular_file(path, 16U * 1024U * 1024U) ||
+      hol_sha256_file(path, actual, error) < 0) return -1;
+  if (strcmp(actual, file->sha256) != 0) {
+    hol_error_set(error, HOL_ERR_CHECKSUM,
+                  "exercise resource checksum mismatch: %s", file->source);
+    return -1;
+  }
+  return 0;
+}
+
+static int parse_profile_runner(json_object *object, hol_lesson *lesson,
+                                hol_error *error) {
+  static const char *const runner_keys[] = {"id", "profile", "check"};
+  static const char *const tests_keys[] = {"kind"};
+  static const char *const stdout_keys[] = {"kind", "expected"};
+  json_object *check = NULL;
+  char kind[16];
+  if (json_exact_keys(object, runner_keys, 3U, "runner", error) < 0 ||
+      json_string_field(lesson->runner.id, sizeof(lesson->runner.id),
+                        object, "id", error) < 0 ||
+      json_string_field(lesson->runner.profile, sizeof(lesson->runner.profile),
+                        object, "profile", error) < 0 ||
+      (check = json_required(object, "check", json_type_object, error)) == NULL ||
+      json_string_field(kind, sizeof(kind), check, "kind", error) < 0) return -1;
+  bool c_runner = strcmp(lesson->runner.id, "c") == 0 &&
+    (strcmp(lesson->runner.profile, "c11") == 0 ||
+     strcmp(lesson->runner.profile, "c11-32") == 0 ||
+     strcmp(lesson->runner.profile, "c23") == 0);
+  bool sql_runner = strcmp(lesson->runner.id, "sql") == 0 &&
+                    strcmp(lesson->runner.profile, "sqlite3") == 0;
+  if (!c_runner && !sql_runner) return -1;
+  if (strcmp(kind, "tests") == 0) {
+    if (json_exact_keys(check, tests_keys, 1U, "test check", error) < 0) return -1;
+    lesson->runner.check_kind = HOL_CHECK_TESTS;
+    return 0;
+  }
+  if (sql_runner) return -1;
+  if (strcmp(kind, "stdout") != 0 ||
+      json_exact_keys(check, stdout_keys, 2U, "stdout check", error) < 0)
+    return -1;
+  json_object *expected = json_required(check, "expected", json_type_string, error);
+  if (expected == NULL || json_object_get_string_len(expected) < 0 ||
+      (size_t)json_object_get_string_len(expected) > HOL_OUTPUT_MAX ||
+      strlen(json_object_get_string(expected)) !=
+        (size_t)json_object_get_string_len(expected)) return -1;
+  lesson->runner.expected_output = strdup(json_object_get_string(expected));
+  if (lesson->runner.expected_output == NULL) return -1;
+  lesson->runner.check_kind = HOL_CHECK_STDOUT;
+  return 0;
+}
+
+static bool ends_with_text(const char *value, const char *suffix) {
+  size_t value_length = strlen(value);
+  size_t suffix_length = strlen(suffix);
+  return value_length >= suffix_length &&
+         strcmp(value + value_length - suffix_length, suffix) == 0;
+}
+
+static int parse_profile_lesson(hol_course *course, xmlNode *organizations,
+                                xmlNode *resources,
+                                json_object *object, hol_error *error) {
+  static const char *const lesson_keys[] = {"id", "workspace", "runner"};
+  static const char *const workspace_keys[] = {"default_file", "files"};
+  char lesson_id[HOL_ID_MAX + 1];
+  json_object *workspace = NULL;
+  json_object *files = NULL;
+  json_object *runner = NULL;
+  if (json_exact_keys(object, lesson_keys, 3U, "lesson", error) < 0 ||
+      json_string_field(lesson_id, sizeof(lesson_id), object, "id", error) < 0 ||
+      !hol_valid_id(lesson_id) ||
+      (workspace = json_required(object, "workspace", json_type_object, error)) == NULL ||
+      json_exact_keys(workspace, workspace_keys, 2U, "workspace", error) < 0 ||
+      (files = json_required(workspace, "files", json_type_array, error)) == NULL ||
+      (runner = json_required(object, "runner", json_type_object, error)) == NULL)
+    return -1;
+  hol_lesson *lesson = lesson_by_id(course, lesson_id);
+  xmlNode *manifest_item = NULL;
+  char resource_id[HOL_ID_MAX + 1];
+  xmlNode *resource = NULL;
+  size_t count = json_object_array_length(files);
+  if (lesson == NULL || lesson->kind != HOL_LESSON_READING || count == 0U || count > 64U ||
+      find_item_by_id(organizations, lesson_id, &manifest_item) < 0 ||
+      manifest_item == NULL ||
+      attribute(manifest_item, "identifierref", resource_id, sizeof(resource_id), error) < 0 ||
+       resource_by_id(resources, resource_id, &resource, error) < 0 ||
+      json_string_field(lesson->default_file, sizeof(lesson->default_file),
+                        workspace, "default_file", error) < 0 ||
+      !hol_safe_relative_path(lesson->default_file)) return -1;
+  if (parse_profile_runner(runner, lesson, error) < 0) return -1;
+  const char *syntax = strcmp(lesson->runner.id, "c") == 0 ? "c" : "sql";
+  const char *translation_suffix = strcmp(lesson->runner.id, "c") == 0 ? ".c" : ".sql";
+  lesson->files = calloc(count, sizeof(*lesson->files));
+  if (lesson->files == NULL) return -1;
+  lesson->file_count = count;
+  bool default_found = false;
+  bool run_tests = false;
+  bool check_tests = false;
+  for (size_t index = 0U; index < count; index++) {
+    json_object *item = json_object_array_get_idx(files, index);
+    if (item == NULL || parse_profile_file(course, resource, item,
+                                            &lesson->files[index], error) < 0) return -1;
+    if (strcmp(lesson->files[index].syntax, syntax) != 0) return -1;
+    for (size_t previous = 0U; previous < index; previous++)
+      if (strcmp(lesson->files[previous].source, lesson->files[index].source) == 0 ||
+          strcmp(lesson->files[previous].target, lesson->files[index].target) == 0)
+        return -1;
+    if (strcmp(lesson->files[index].target, lesson->default_file) == 0 &&
+        lesson->files[index].role == HOL_FILE_EDITABLE) default_found = true;
+    if (lesson->files[index].role == HOL_FILE_HIDDEN &&
+        ends_with_text(lesson->files[index].target, translation_suffix) &&
+        (lesson->files[index].phase & HOL_PHASE_RUN) != 0) run_tests = true;
+    if (lesson->files[index].role == HOL_FILE_HIDDEN &&
+        ends_with_text(lesson->files[index].target, translation_suffix) &&
+        (lesson->files[index].phase & HOL_PHASE_CHECK) != 0) check_tests = true;
+  }
+  if (!default_found || !run_tests ||
+      (lesson->runner.check_kind == HOL_CHECK_TESTS && !check_tests)) return -1;
+  lesson->kind = HOL_LESSON_EXERCISE;
+  return 0;
+}
+
+static int load_exercise_profile(hol_course *course, xmlNode *organizations,
+                                 xmlNode *resources, const char *profile_path,
+                                 hol_error *error) {
+  static const char *const root_keys[] = {
+    "schema_version", "cartridge_sha256", "course_id", "course_version", "lessons",
+  };
+  if (profile_path == NULL) return 0;
+  if (!bounded_regular_file(profile_path, 4U * 1024U * 1024U)) {
+    hol_error_set(error, HOL_ERR_SCHEMA, "exercise profile is not a bounded regular file");
+    return -1;
+  }
+  size_t text_length = 0U;
+  char *text = hol_read_text(profile_path, 4U * 1024U * 1024U, &text_length, error);
+  if (text == NULL || text_length > INT_MAX) {
+    free(text);
+    return -1;
+  }
+  json_tokener *tokener = json_tokener_new_ex(32);
+  if (tokener == NULL) {
+    free(text);
+    return -1;
+  }
+  json_tokener_set_flags(tokener, JSON_TOKENER_STRICT);
+  json_object *profile = json_tokener_parse_ex(tokener, text, (int)text_length);
+  enum json_tokener_error status = json_tokener_get_error(tokener);
+  size_t parsed = json_tokener_get_parse_end(tokener);
+  json_tokener_free(tokener);
+  while (parsed < text_length && isspace((unsigned char)text[parsed])) parsed++;
+  free(text);
+  if (profile == NULL || status != json_tokener_success || parsed != text_length ||
+      !json_object_is_type(profile, json_type_object)) {
+    if (profile != NULL) json_object_put(profile);
+    hol_error_set(error, HOL_ERR_JSON, "exercise profile is not strict JSON");
+    return -1;
+  }
+  json_object *schema = NULL;
+  json_object *lessons = NULL;
+  char cartridge_sha256[65];
+  char course_id[HOL_ID_MAX + 1];
+  char course_version[32];
+  int result = -1;
+  if (json_exact_keys(profile, root_keys, 5U, "root", error) < 0 ||
+      (schema = json_required(profile, "schema_version", json_type_int, error)) == NULL ||
+      json_object_get_int64(schema) != 1 ||
+      json_string_field(cartridge_sha256, sizeof(cartridge_sha256), profile,
+                        "cartridge_sha256", error) < 0 ||
+      json_string_field(course_id, sizeof(course_id), profile, "course_id", error) < 0 ||
+      json_string_field(course_version, sizeof(course_version), profile,
+                        "course_version", error) < 0 ||
+      (lessons = json_required(profile, "lessons", json_type_array, error)) == NULL ||
+      !digest_string(cartridge_sha256) || strcmp(course_id, course->id) != 0 ||
+      strcmp(course_version, course->version) != 0 ||
+      json_object_array_length(lessons) == 0U ||
+      json_object_array_length(lessons) > course->lesson_count) goto done;
+  char actual[65];
+  if (hol_sha256_file(course->source_path, actual, error) < 0) goto done;
+  if (strcmp(actual, cartridge_sha256) != 0) {
+    hol_error_set(error, HOL_ERR_CHECKSUM,
+                  "exercise profile does not match the cartridge checksum");
+    goto done;
+  }
+  for (size_t index = 0U; index < json_object_array_length(lessons); index++) {
+    json_object *item = json_object_array_get_idx(lessons, index);
+    if (item == NULL || parse_profile_lesson(course, organizations, resources,
+                                             item, error) < 0) goto done;
+  }
+  course->has_exercise_profile = true;
+  result = 0;
+
+done:
+  json_object_put(profile);
+  if (result < 0 && error != NULL && error->message[0] == '\0')
+    hol_error_set(error, HOL_ERR_SCHEMA, "invalid exercise profile");
+  return result;
+}
+
 static int node_text(xmlNode *node, char *target, size_t capacity,
                      const char *field, hol_error *error) {
   if (node == NULL) return -1;
@@ -226,17 +595,45 @@ static int attribute(xmlNode *node, const char *name, char *target, size_t capac
   return result;
 }
 
-static xmlNode *resource_by_id(xmlNode *resources, const char *identifier) {
+static int resource_by_id(xmlNode *resources, const char *identifier,
+                          xmlNode **found, hol_error *error) {
+  *found = NULL;
   for (xmlNode *node = resources != NULL ? resources->children : NULL;
        node != NULL; node = node->next) {
     if (node->type != XML_ELEMENT_NODE ||
-        strcmp((const char *)node->name, "resource") != 0) continue;
+        strcmp((const char *)node->name, "resource") != 0 || node->ns == NULL ||
+        strcmp((const char *)node->ns->href, manifest_namespace) != 0) continue;
     xmlChar *value = xmlGetProp(node, (const xmlChar *)"identifier");
-    bool matches = value != NULL && strcmp((const char *)value, identifier) == 0;
+    if (value == NULL) {
+      hol_error_set(error, HOL_ERR_SCHEMA,
+                    "Common Cartridge resource is missing identifier");
+      return -1;
+    }
+    for (xmlNode *later = node->next; later != NULL; later = later->next) {
+      if (later->type != XML_ELEMENT_NODE ||
+          strcmp((const char *)later->name, "resource") != 0 || later->ns == NULL ||
+          strcmp((const char *)later->ns->href, manifest_namespace) != 0) continue;
+      xmlChar *later_value = xmlGetProp(later, (const xmlChar *)"identifier");
+      bool duplicate = later_value != NULL &&
+                       strcmp((const char *)later_value, (const char *)value) == 0;
+      xmlFree(later_value);
+      if (duplicate) {
+        hol_error_set(error, HOL_ERR_SCHEMA,
+                      "duplicate Common Cartridge resource identifier: %s", value);
+        xmlFree(value);
+        return -1;
+      }
+    }
+    bool matches = strcmp((const char *)value, identifier) == 0;
     xmlFree(value);
-    if (matches) return node;
+    if (matches) *found = node;
   }
-  return NULL;
+  if (*found == NULL) {
+    hol_error_set(error, HOL_ERR_SCHEMA,
+                  "missing Common Cartridge resource: %s", identifier);
+    return -1;
+  }
+  return 0;
 }
 
 static int write_reader_text(const hol_course *course, const char *id,
@@ -256,10 +653,9 @@ static int parse_web_content(hol_course *course, hol_lesson *lesson,
       !hol_safe_relative_path(href)) return -1;
   char path[4096];
   if (hol_join_path(path, sizeof(path), course->root, href, error) < 0) return -1;
-  xmlNode *file = child(resource, "file");
-  char declared[HOL_PATH_MAX + 1];
-  if (attribute(file, "href", declared, sizeof(declared), error) < 0 ||
-      strcmp(declared, href) != 0 || !bounded_regular_file(path, 16U * 1024U * 1024U))
+  xmlNode *file = NULL;
+  if (resource_file_by_path(resource, href, &file, NULL, error) < 0 ||
+      !bounded_regular_file(path, 16U * 1024U * 1024U))
     return -1;
   xmlDoc *document = htmlReadFile(path, NULL, HTML_PARSE_NONET | HTML_PARSE_NOERROR |
                                               HTML_PARSE_NOWARNING);
@@ -366,13 +762,15 @@ static size_t find_qti_passing_score(xmlNode *node, size_t maximum) {
 
 static int parse_qti(hol_course *course, hol_lesson *lesson, xmlNode *resource,
                      hol_error *error) {
-  xmlNode *file = child(resource, "file");
   char href[HOL_PATH_MAX + 1];
-  if (attribute(file, "href", href, sizeof(href), error) < 0 ||
+  xmlNode *file = NULL;
+  size_t file_count = 0U;
+  if (resource_file_by_path(resource, NULL, &file, &file_count, error) < 0 ||
+      file_count != 1U || attribute(file, "href", href, sizeof(href), error) < 0 ||
       !hol_safe_relative_path(href)) return -1;
   char path[4096];
   if (hol_join_path(path, sizeof(path), course->root, href, error) < 0) return -1;
-  if (file->next != NULL || !bounded_regular_file(path, 4U * 1024U * 1024U)) return -1;
+  if (!bounded_regular_file(path, 4U * 1024U * 1024U)) return -1;
   xmlDoc *document = xmlReadFile(path, NULL, XML_PARSE_NONET | XML_PARSE_NOBLANKS);
   if (document == NULL) return -1;
   xmlNode *root = xmlDocGetRootElement(document);
@@ -433,9 +831,10 @@ static int parse_lesson(hol_course *course, hol_lesson *lesson, xmlNode *item,
       attribute(item, "identifierref", reference, sizeof(reference), error) < 0 ||
       node_text(child(item, "title"), lesson->title, sizeof(lesson->title),
                 "lesson title", error) < 0) return -1;
-  xmlNode *resource = resource_by_id(resources, reference);
+  xmlNode *resource = NULL;
   char type[128];
-  if (resource == NULL || attribute(resource, "type", type, sizeof(type), error) < 0)
+  if (resource_by_id(resources, reference, &resource, error) < 0 ||
+      attribute(resource, "type", type, sizeof(type), error) < 0)
     return -1;
   if (strcmp(type, "webcontent") == 0)
     return parse_web_content(course, lesson, resource, error);
@@ -490,7 +889,8 @@ static int parse_organization(hol_course *course, xmlNode *organizations,
   return 0;
 }
 
-int hol_course_load(const char *source, hol_course **output, hol_error *error) {
+static int course_load(const char *source, const char *profile_path,
+                       hol_course **output, hol_error *error) {
   if (source == NULL || output == NULL) return -1;
   *output = NULL;
   hol_course *course = calloc(1U, sizeof(*course));
@@ -546,6 +946,9 @@ int hol_course_load(const char *source, hol_course **output, hol_error *error) {
   (void)snprintf(course->license_file, sizeof(course->license_file), "LICENSE");
   if (parse_organization(course, child(manifest, "organizations"),
                          child(manifest, "resources"), error) < 0) goto xml_failure;
+  if (load_exercise_profile(course, child(manifest, "organizations"),
+                            child(manifest, "resources"), profile_path, error) < 0)
+    goto xml_failure;
   xmlFreeDoc(document);
   *output = course;
   return 0;
@@ -557,6 +960,19 @@ failure:
   if (error != NULL && error->message[0] == '\0')
     hol_error_set(error, HOL_ERR_SCHEMA, "invalid Common Cartridge package");
   return -1;
+}
+
+int hol_course_load(const char *source, hol_course **output, hol_error *error) {
+  return course_load(source, NULL, output, error);
+}
+
+int hol_course_load_profile(const char *source, const char *profile_path,
+                            hol_course **output, hol_error *error) {
+  if (profile_path == NULL) {
+    hol_error_set(error, HOL_ERR_ARGUMENT, "exercise profile path is required");
+    return -1;
+  }
+  return course_load(source, profile_path, output, error);
 }
 
 const hol_lesson *hol_course_lesson(const hol_course *course, size_t index) {

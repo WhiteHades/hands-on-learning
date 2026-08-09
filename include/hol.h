@@ -47,6 +47,12 @@ typedef enum {
 } hol_file_role;
 
 typedef enum {
+  HOL_PHASE_RUN = 1,
+  HOL_PHASE_CHECK = 2,
+  HOL_PHASE_BOTH = 3
+} hol_file_phase;
+
+typedef enum {
   HOL_CHECK_NONE,
   HOL_CHECK_STDOUT,
   HOL_CHECK_TESTS
@@ -56,7 +62,9 @@ typedef struct {
   char source[HOL_PATH_MAX + 1];
   char target[HOL_PATH_MAX + 1];
   char syntax[32];
+  char sha256[65];
   hol_file_role role;
+  hol_file_phase phase;
 } hol_course_file;
 
 typedef struct {
@@ -116,6 +124,7 @@ typedef struct {
   char root[4096];
   char source_path[4096];
   bool owns_root;
+  bool has_exercise_profile;
   hol_chapter *chapters;
   size_t chapter_count;
   size_t lesson_count;
@@ -213,6 +222,8 @@ int hol_sha256_file(const char *path, char hexadecimal[65],
 bool hol_version_supported(const char *minimum_version);
 
 int hol_course_load(const char *root, hol_course **output, hol_error *error);
+int hol_course_load_profile(const char *root, const char *profile_path,
+                            hol_course **output, hol_error *error);
 const hol_lesson *hol_course_lesson(const hol_course *course, size_t index);
 void hol_course_free(hol_course *course);
 
@@ -250,6 +261,7 @@ int hol_catalog_install_path(const char *catalog_path, const char *course_id,
                              const char *destination, char *course_path,
                              size_t course_path_size, hol_error *error);
 
-int hol_ui_run(const char *course_root, hol_error *error);
+int hol_ui_run(const char *course_root, const char *profile_path,
+               hol_error *error);
 
 #endif
