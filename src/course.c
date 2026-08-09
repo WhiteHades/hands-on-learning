@@ -18,6 +18,8 @@ static const char manifest_namespace[] =
   "http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1";
 static const char qti_namespace[] =
   "http://www.imsglobal.org/xsd/ims_qtiasiv1p2";
+static const char lom_manifest_namespace[] =
+  "http://ltsc.ieee.org/xsd/imsccv1p3/LOM/manifest";
 static const char qti_assessment_type[] =
   "imsqti_xmlv1p2/imscc_xmlv1p3/assessment";
 static const uint64_t maximum_expanded_bytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
@@ -98,7 +100,8 @@ static int extract_cartridge(const char *source, char root[4096], hol_error *err
   size_t entries = 0U;
   uint64_t expanded = 0U;
   struct archive_entry *entry = NULL;
-  while (archive_read_next_header(archive, &entry) == ARCHIVE_OK) {
+  int header_status = ARCHIVE_OK;
+  while ((header_status = archive_read_next_header(archive, &entry)) == ARCHIVE_OK) {
     const char *archive_path = archive_entry_pathname(entry);
     char relative[HOL_PATH_MAX + 1];
     if (archive_path == NULL ||
@@ -147,8 +150,11 @@ static int extract_cartridge(const char *source, char root[4096], hol_error *err
     }
     if (close(output) < 0) goto archive_failure;
   }
-  if (archive_read_close(archive) != ARCHIVE_OK ||
-      archive_read_free(archive) != ARCHIVE_OK || entries == 0U) goto failure;
+  if (header_status != ARCHIVE_EOF) goto archive_failure;
+  int close_status = archive_read_close(archive);
+  int free_status = archive_read_free(archive);
+  if (close_status != ARCHIVE_OK || free_status != ARCHIVE_OK || entries == 0U)
+    goto failure;
   char manifest[4096];
   if (hol_join_path(manifest, sizeof(manifest), root, "imsmanifest.xml", error) < 0 ||
       access(manifest, R_OK) < 0) goto failure;
@@ -166,7 +172,8 @@ failure:
 static xmlNode *child(xmlNode *parent, const char *name) {
   for (xmlNode *node = parent != NULL ? parent->children : NULL;
        node != NULL; node = node->next)
-    if (node->type == XML_ELEMENT_NODE &&
+    if (node->type == XML_ELEMENT_NODE && node->ns != NULL && parent->ns != NULL &&
+        xmlStrEqual(node->ns->href, parent->ns->href) &&
         strcmp((const char *)node->name, name) == 0) return node;
   return NULL;
 }
@@ -174,12 +181,30 @@ static xmlNode *child(xmlNode *parent, const char *name) {
 static xmlNode *descendant(xmlNode *parent, const char *name) {
   for (xmlNode *node = parent != NULL ? parent->children : NULL;
        node != NULL; node = node->next) {
-    if (node->type != XML_ELEMENT_NODE) continue;
+    if (node->type != XML_ELEMENT_NODE || node->ns == NULL || parent->ns == NULL ||
+        !xmlStrEqual(node->ns->href, parent->ns->href)) continue;
     if (strcmp((const char *)node->name, name) == 0) return node;
     xmlNode *nested = descendant(node, name);
     if (nested != NULL) return nested;
   }
   return NULL;
+}
+
+static xmlNode *child_namespace(xmlNode *parent, const char *name,
+                                const char *namespace) {
+  for (xmlNode *node = parent != NULL ? parent->children : NULL;
+       node != NULL; node = node->next)
+    if (node->type == XML_ELEMENT_NODE && node->ns != NULL &&
+        strcmp((const char *)node->name, name) == 0 &&
+        strcmp((const char *)node->ns->href, namespace) == 0) return node;
+  return NULL;
+}
+
+static bool bounded_regular_file(const char *path, uint64_t maximum) {
+  struct stat status;
+  return lstat(path, &status) == 0 && S_ISREG(status.st_mode) &&
+         status.st_nlink == 1 && status.st_size >= 0 &&
+         (uint64_t)status.st_size <= maximum;
 }
 
 static int node_text(xmlNode *node, char *target, size_t capacity,
@@ -231,6 +256,11 @@ static int parse_web_content(hol_course *course, hol_lesson *lesson,
       !hol_safe_relative_path(href)) return -1;
   char path[4096];
   if (hol_join_path(path, sizeof(path), course->root, href, error) < 0) return -1;
+  xmlNode *file = child(resource, "file");
+  char declared[HOL_PATH_MAX + 1];
+  if (attribute(file, "href", declared, sizeof(declared), error) < 0 ||
+      strcmp(declared, href) != 0 || !bounded_regular_file(path, 16U * 1024U * 1024U))
+    return -1;
   xmlDoc *document = htmlReadFile(path, NULL, HTML_PARSE_NONET | HTML_PARSE_NOERROR |
                                               HTML_PARSE_NOWARNING);
   if (document == NULL) return -1;
@@ -249,12 +279,29 @@ static int parse_web_content(hol_course *course, hol_lesson *lesson,
 
 static int parse_qti_item(xmlNode *item, hol_quiz_question *question,
                           hol_error *error) {
+  xmlNode *metadata = descendant(item, "qtimetadata");
+  bool profile_found = false;
+  for (xmlNode *field = metadata != NULL ? metadata->children : NULL;
+       field != NULL; field = field->next) {
+    if (field->type != XML_ELEMENT_NODE ||
+        strcmp((const char *)field->name, "qtimetadatafield") != 0) continue;
+    char label[64];
+    char entry[64];
+    if (node_text(child(field, "fieldlabel"), label, sizeof(label), "profile", error) == 0 &&
+        node_text(child(field, "fieldentry"), entry, sizeof(entry), "profile", error) == 0 &&
+        strcmp(label, "cc_profile") == 0 &&
+        strcmp(entry, "cc.multiple_choice.v0p1") == 0) profile_found = true;
+  }
   if (attribute(item, "ident", question->id, sizeof(question->id), error) < 0 ||
-      !hol_valid_id(question->id) ||
+      !hol_valid_id(question->id) || !profile_found ||
       node_text(descendant(descendant(item, "presentation"), "mattext"),
                 question->prompt, sizeof(question->prompt), "prompt", error) < 0)
     return -1;
   xmlNode *render = descendant(item, "render_choice");
+  xmlNode *response = descendant(item, "response_lid");
+  char cardinality[16];
+  if (attribute(response, "rcardinality", cardinality, sizeof(cardinality), error) < 0 ||
+      strcmp(cardinality, "Single") != 0) return -1;
   size_t count = 0U;
   for (xmlNode *node = render != NULL ? render->children : NULL;
        node != NULL; node = node->next)
@@ -273,15 +320,48 @@ static int parse_qti_item(xmlNode *item, hol_quiz_question *question,
         node_text(descendant(node, "mattext"), question->choices[index].text,
                   sizeof(question->choices[index].text), "choice", error) < 0)
       return -1;
+    for (size_t previous = 0U; previous < index; previous++)
+      if (strcmp(question->choices[previous].id, question->choices[index].id) == 0)
+        return -1;
     index++;
   }
   if (node_text(descendant(item, "varequal"), question->answer,
                 sizeof(question->answer), "answer", error) < 0) return -1;
+  bool answer_found = false;
+  for (size_t choice = 0U; choice < question->choice_count; choice++)
+    if (strcmp(question->choices[choice].id, question->answer) == 0) answer_found = true;
+  if (!answer_found) return -1;
   xmlNode *feedback = descendant(item, "itemfeedback");
   if (feedback != NULL)
     (void)node_text(descendant(feedback, "mattext"), question->explanation,
                     sizeof(question->explanation), "feedback", error);
   return 0;
+}
+
+static size_t find_qti_passing_score(xmlNode *node, size_t maximum) {
+  for (xmlNode *current = node != NULL ? node->children : NULL;
+       current != NULL; current = current->next) {
+    if (current->type != XML_ELEMENT_NODE) continue;
+    if (strcmp((const char *)current->name, "qtimetadatafield") == 0) {
+      xmlChar *label = xmlNodeGetContent(child(current, "fieldlabel"));
+      xmlChar *entry = xmlNodeGetContent(child(current, "fieldentry"));
+      if (label != NULL && entry != NULL &&
+          strcmp((const char *)label, "qmd_masteryscore") == 0) {
+        char *end = NULL;
+        unsigned long value = strtoul((const char *)entry, &end, 10);
+        xmlFree(label);
+        xmlFree(entry);
+        if (end != NULL && *end == '\0' && value >= 1UL && value <= maximum)
+          return (size_t)value;
+        return 0U;
+      }
+      xmlFree(label);
+      xmlFree(entry);
+    }
+    size_t nested = find_qti_passing_score(current, maximum);
+    if (nested > 0U) return nested;
+  }
+  return 0U;
 }
 
 static int parse_qti(hol_course *course, hol_lesson *lesson, xmlNode *resource,
@@ -292,6 +372,7 @@ static int parse_qti(hol_course *course, hol_lesson *lesson, xmlNode *resource,
       !hol_safe_relative_path(href)) return -1;
   char path[4096];
   if (hol_join_path(path, sizeof(path), course->root, href, error) < 0) return -1;
+  if (file->next != NULL || !bounded_regular_file(path, 4U * 1024U * 1024U)) return -1;
   xmlDoc *document = xmlReadFile(path, NULL, XML_PARSE_NONET | XML_PARSE_NOBLANKS);
   if (document == NULL) return -1;
   xmlNode *root = xmlDocGetRootElement(document);
@@ -299,17 +380,31 @@ static int parse_qti(hol_course *course, hol_lesson *lesson, xmlNode *resource,
       strcmp((const char *)root->ns->href, qti_namespace) != 0 ||
       strcmp((const char *)root->name, "questestinterop") != 0) goto failure;
   xmlNode *assessment = child(root, "assessment");
+  bool assessment_profile = false;
+  xmlNode *assessment_metadata = child(assessment, "qtimetadata");
+  for (xmlNode *field = assessment_metadata != NULL ? assessment_metadata->children : NULL;
+       field != NULL; field = field->next) {
+    if (field->type != XML_ELEMENT_NODE ||
+        strcmp((const char *)field->name, "qtimetadatafield") != 0) continue;
+    char label[64];
+    char entry[64];
+    if (node_text(child(field, "fieldlabel"), label, sizeof(label), "profile", error) == 0 &&
+        node_text(child(field, "fieldentry"), entry, sizeof(entry), "profile", error) == 0 &&
+        strcmp(label, "cc_profile") == 0 && strcmp(entry, "cc.exam.v0p1") == 0)
+      assessment_profile = true;
+  }
   xmlNode *section = child(assessment, "section");
   size_t count = 0U;
   for (xmlNode *node = section != NULL ? section->children : NULL;
        node != NULL; node = node->next)
     if (node->type == XML_ELEMENT_NODE && strcmp((const char *)node->name, "item") == 0)
       count++;
-  if (count == 0U || count > 100U) goto failure;
+  if (!assessment_profile || count == 0U || count > 100U) goto failure;
   lesson->questions = calloc(count, sizeof(*lesson->questions));
   if (lesson->questions == NULL) goto failure;
   lesson->question_count = count;
-  lesson->quiz_passing_score = count;
+  size_t passing_score = find_qti_passing_score(assessment, count);
+  lesson->quiz_passing_score = passing_score > 0U ? passing_score : count;
   size_t index = 0U;
   for (xmlNode *node = section->children; node != NULL; node = node->next) {
     if (node->type != XML_ELEMENT_NODE || strcmp((const char *)node->name, "item") != 0)
@@ -354,7 +449,10 @@ static int parse_organization(hol_course *course, xmlNode *organizations,
                               xmlNode *resources, hol_error *error) {
   xmlNode *organization = child(organizations, "organization");
   xmlNode *root_item = child(organization, "item");
-  if (organization == NULL || root_item == NULL) return -1;
+  char structure[32];
+  if (organization == NULL || root_item == NULL ||
+      attribute(organization, "structure", structure, sizeof(structure), error) < 0 ||
+      strcmp(structure, "rooted-hierarchy") != 0) return -1;
   size_t chapter_count = 0U;
   for (xmlNode *node = root_item->children; node != NULL; node = node->next)
     if (node->type == XML_ELEMENT_NODE && strcmp((const char *)node->name, "item") == 0)
@@ -403,6 +501,7 @@ int hol_course_load(const char *source, hol_course **output, hol_error *error) {
   char manifest_path[4096];
   if (hol_join_path(manifest_path, sizeof(manifest_path), course->root,
                     "imsmanifest.xml", error) < 0) goto failure;
+  if (!bounded_regular_file(manifest_path, 4U * 1024U * 1024U)) goto failure;
   xmlDoc *document = xmlReadFile(manifest_path, NULL, XML_PARSE_NONET | XML_PARSE_NOBLANKS);
   if (document == NULL) goto failure;
   xmlNode *manifest = xmlDocGetRootElement(document);
@@ -417,7 +516,7 @@ int hol_course_load(const char *source, hol_course **output, hol_error *error) {
                 sizeof(schema_version), "schema version", error) < 0 ||
       strcmp(schema, "IMS Common Cartridge") != 0 ||
       strcmp(schema_version, "1.3.0") != 0) goto xml_failure;
-  xmlNode *lom = child(metadata, "lom");
+  xmlNode *lom = child_namespace(metadata, "lom", lom_manifest_namespace);
   xmlNode *general = child(lom, "general");
   xmlNode *lifecycle = child(lom, "lifeCycle");
   xmlNode *rights = child(lom, "rights");

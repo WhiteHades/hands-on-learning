@@ -260,7 +260,9 @@ int hol_atomic_write(const char *path, const char *data, size_t length,
     }
     offset += (size_t)count;
   }
-  if (fsync(descriptor) < 0 || close(descriptor) < 0 || rename(temporary, path) < 0) {
+  int sync_status = fsync(descriptor);
+  int close_status = close(descriptor);
+  if (sync_status < 0 || close_status < 0 || rename(temporary, path) < 0) {
     hol_error_set(error, HOL_ERR_IO, "cannot publish atomic file");
     (void)unlink(temporary);
     return -1;
