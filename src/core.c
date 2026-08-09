@@ -859,6 +859,41 @@ int hol_state_load(const char *path, hol_state *state, hol_error *error) {
     state->output_scroll = (size_t)json_object_get_uint64(value);
   if (json_object_object_get_ex(object, "pane", &value))
     state->pane = json_object_get_int(value);
+  if (json_object_object_get_ex(object, "progress", &value) &&
+      json_object_is_type(value, json_type_array)) {
+    size_t count = json_object_array_length(value);
+    if (count > 10000U) {
+      json_object_put(object);
+      return -1;
+    }
+    if (count > 0U) {
+      state->progress = calloc(count, sizeof(*state->progress));
+      if (state->progress == NULL) {
+        json_object_put(object);
+        return -1;
+      }
+    }
+    state->progress_count = count;
+    for (size_t index = 0U; index < count; index++) {
+      json_object *entry = json_object_array_get_idx(value, index);
+      const char *course_id = required_string(entry, "course_id", error);
+      const char *lesson_id = required_string(entry, "lesson_id", error);
+      json_object *completed = required(entry, "completed", json_type_boolean, error);
+      if (course_id == NULL || lesson_id == NULL || completed == NULL ||
+          !valid_id(course_id) || !valid_id(lesson_id) ||
+          copy_string(state->progress[index].course_id,
+                      sizeof(state->progress[index].course_id), course_id,
+                      "progress course id", error) < 0 ||
+          copy_string(state->progress[index].lesson_id,
+                      sizeof(state->progress[index].lesson_id), lesson_id,
+                      "progress lesson id", error) < 0) {
+        json_object_put(object);
+        hol_state_free(state);
+        return -1;
+      }
+      state->progress[index].completed = json_object_get_boolean(completed) != 0;
+    }
+  }
   json_object_put(object);
   return 0;
 }
@@ -876,10 +911,67 @@ int hol_state_save(const char *path, const hol_state *state, hol_error *error) {
   json_object_object_add(object, "output_scroll",
                          json_object_new_uint64(state->output_scroll));
   json_object_object_add(object, "pane", json_object_new_int(state->pane));
+  json_object *progress = json_object_new_array_ext((int)state->progress_count);
+  for (size_t index = 0U; index < state->progress_count; index++) {
+    json_object *entry = json_object_new_object();
+    json_object_object_add(entry, "course_id",
+                           json_object_new_string(state->progress[index].course_id));
+    json_object_object_add(entry, "lesson_id",
+                           json_object_new_string(state->progress[index].lesson_id));
+    json_object_object_add(entry, "completed",
+                           json_object_new_boolean(state->progress[index].completed));
+    json_object_array_add(progress, entry);
+  }
+  json_object_object_add(object, "progress", progress);
   const char *json = json_object_to_json_string_ext(object, JSON_C_TO_STRING_PRETTY);
   int result = hol_atomic_write(path, json, strlen(json), error);
   json_object_put(object);
   return result;
+}
+
+bool hol_state_completed(const hol_state *state, const char *course_id,
+                         const char *lesson_id) {
+  for (size_t index = 0U; index < state->progress_count; index++)
+    if (state->progress[index].completed &&
+        strcmp(state->progress[index].course_id, course_id) == 0 &&
+        strcmp(state->progress[index].lesson_id, lesson_id) == 0) return true;
+  return false;
+}
+
+int hol_state_mark_completed(hol_state *state, const char *course_id,
+                             const char *lesson_id, hol_error *error) {
+  if (!valid_id(course_id) || !valid_id(lesson_id)) return -1;
+  for (size_t index = 0U; index < state->progress_count; index++) {
+    if (strcmp(state->progress[index].course_id, course_id) == 0 &&
+        strcmp(state->progress[index].lesson_id, lesson_id) == 0) {
+      state->progress[index].completed = true;
+      return 0;
+    }
+  }
+  if (state->progress_count >= 10000U) {
+    hol_error_set(error, HOL_ERR_SCHEMA, "progress entry limit reached");
+    return -1;
+  }
+  size_t next_count = state->progress_count + 1U;
+  hol_progress_entry *next = realloc(state->progress, next_count * sizeof(*next));
+  if (next == NULL) return -1;
+  state->progress = next;
+  hol_progress_entry *entry = &state->progress[state->progress_count];
+  memset(entry, 0, sizeof(*entry));
+  if (copy_string(entry->course_id, sizeof(entry->course_id), course_id,
+                  "progress course id", error) < 0 ||
+      copy_string(entry->lesson_id, sizeof(entry->lesson_id), lesson_id,
+                  "progress lesson id", error) < 0) return -1;
+  entry->completed = true;
+  state->progress_count = next_count;
+  return 0;
+}
+
+void hol_state_free(hol_state *state) {
+  if (state == NULL) return;
+  free(state->progress);
+  state->progress = NULL;
+  state->progress_count = 0U;
 }
 
 int hol_workspace_ensure(const hol_course *course, const hol_lesson *lesson,

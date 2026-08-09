@@ -178,11 +178,19 @@ typedef struct {
 typedef struct {
   char course_id[HOL_ID_MAX + 1];
   char lesson_id[HOL_ID_MAX + 1];
+  bool completed;
+} hol_progress_entry;
+
+typedef struct {
+  char course_id[HOL_ID_MAX + 1];
+  char lesson_id[HOL_ID_MAX + 1];
   char file_path[HOL_PATH_MAX + 1];
   size_t reader_scroll;
   size_t preview_scroll;
   size_t output_scroll;
   int pane;
+  hol_progress_entry *progress;
+  size_t progress_count;
 } hol_state;
 
 void hol_error_set(hol_error *error, hol_errc code, const char *format, ...)
@@ -203,6 +211,11 @@ void hol_course_free(hol_course *course);
 
 int hol_state_load(const char *path, hol_state *state, hol_error *error);
 int hol_state_save(const char *path, const hol_state *state, hol_error *error);
+bool hol_state_completed(const hol_state *state, const char *course_id,
+                         const char *lesson_id);
+int hol_state_mark_completed(hol_state *state, const char *course_id,
+                             const char *lesson_id, hol_error *error);
+void hol_state_free(hol_state *state);
 
 int hol_workspace_ensure(const hol_course *course, const hol_lesson *lesson,
                          const char *workspace, hol_error *error);
