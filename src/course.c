@@ -1,12 +1,26 @@
 #include "hol.h"
 
+#include <archive.h>
+#include <archive_entry.h>
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
-#include <json-c/json.h>
+#include <fcntl.h>
+#include <libxml/HTMLparser.h>
+#include <libxml/parser.h>
+#include <libxml/tree.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+static const char manifest_namespace[] =
+  "http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1";
+static const char qti_namespace[] =
+  "http://www.imsglobal.org/xsd/ims_qtiasiv1p2";
+static const char qti_assessment_type[] =
+  "imsqti_xmlv1p2/imscc_xmlv1p3/assessment";
+static const uint64_t maximum_expanded_bytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
 
 static int copy_string(char *target, size_t capacity, const char *value,
                        const char *field, hol_error *error) {
@@ -20,485 +34,429 @@ static int copy_string(char *target, size_t capacity, const char *value,
   return 0;
 }
 
-static json_object *required(json_object *parent, const char *name,
-                             enum json_type type, hol_error *error) {
-  json_object *value = NULL;
-  if (!json_object_object_get_ex(parent, name, &value) ||
-      !json_object_is_type(value, type)) {
-    hol_error_set(error, HOL_ERR_SCHEMA, "missing or invalid field: %s", name);
-    return NULL;
-  }
-  return value;
-}
-
-static const char *required_string(json_object *parent, const char *name,
-                                   hol_error *error) {
-  json_object *value = required(parent, name, json_type_string, error);
-  if (value == NULL) return NULL;
-  const char *text = json_object_get_string(value);
-  if ((size_t)json_object_get_string_len(value) != strlen(text)) {
-    hol_error_set(error, HOL_ERR_SCHEMA, "field contains an embedded NUL: %s", name);
-    return NULL;
-  }
-  return text;
-}
-
-static int parse_file(json_object *object, hol_course_file *file,
-                      hol_error *error) {
-  const char *source = required_string(object, "source", error);
-  const char *target = required_string(object, "target", error);
-  const char *role = required_string(object, "role", error);
-  const char *syntax = required_string(object, "syntax", error);
-  if (source == NULL || target == NULL || role == NULL || syntax == NULL) return -1;
-  if (!hol_safe_relative_path(source) || !hol_safe_relative_path(target)) {
-    hol_error_set(error, HOL_ERR_PATH, "workspace file has an unsafe path");
-    return -1;
-  }
-  if (strcmp(role, "editable") == 0) file->role = HOL_FILE_EDITABLE;
-  else if (strcmp(role, "readonly") == 0) file->role = HOL_FILE_READONLY;
-  else if (strcmp(role, "hidden") == 0) file->role = HOL_FILE_HIDDEN;
-  else {
-    hol_error_set(error, HOL_ERR_SCHEMA, "unknown workspace role: %s", role);
-    return -1;
-  }
-  return copy_string(file->source, sizeof(file->source), source, "source", error) |
-         copy_string(file->target, sizeof(file->target), target, "target", error) |
-         copy_string(file->syntax, sizeof(file->syntax), syntax, "syntax", error);
-}
-
-static int parse_quiz(json_object *quiz, hol_lesson *lesson, hol_error *error) {
-  json_object *questions = required(quiz, "questions", json_type_array, error);
-  json_object *passing_score = required(quiz, "passing_score", json_type_int, error);
-  if (questions == NULL || passing_score == NULL) return -1;
-  size_t count = json_object_array_length(questions);
-  int64_t score = json_object_get_int64(passing_score);
-  if (count == 0U || count > 100U || score < 1 || (uint64_t)score > count) {
-    hol_error_set(error, HOL_ERR_SCHEMA, "quiz question count is invalid");
-    return -1;
-  }
-  lesson->questions = calloc(count, sizeof(*lesson->questions));
-  if (lesson->questions == NULL) return -1;
-  lesson->question_count = count;
-  lesson->quiz_passing_score = (size_t)score;
-  for (size_t index = 0U; index < count; index++) {
-    json_object *question = json_object_array_get_idx(questions, index);
-    const char *id = required_string(question, "id", error);
-    const char *prompt = required_string(question, "prompt", error);
-    const char *answer = required_string(question, "answer", error);
-    json_object *choices = required(question, "choices", json_type_array, error);
-    if (id == NULL || prompt == NULL || answer == NULL || choices == NULL ||
-        !hol_valid_id(id)) return -1;
-    for (size_t previous = 0U; previous < index; previous++)
-      if (strcmp(lesson->questions[previous].id, id) == 0) {
-        hol_error_set(error, HOL_ERR_SCHEMA, "duplicate quiz question id");
-        return -1;
-      }
-    hol_quiz_question *target = &lesson->questions[index];
-    if (copy_string(target->id, sizeof(target->id), id, "question id", error) < 0 ||
-        copy_string(target->prompt, sizeof(target->prompt), prompt, "prompt", error) < 0 ||
-        copy_string(target->answer, sizeof(target->answer), answer, "answer", error) < 0) {
-      return -1;
-    }
-    json_object *explanation = NULL;
-    if (json_object_object_get_ex(question, "explanation", &explanation)) {
-      if (!json_object_is_type(explanation, json_type_string) ||
-          (size_t)json_object_get_string_len(explanation) !=
-            strlen(json_object_get_string(explanation)) ||
-          copy_string(target->explanation, sizeof(target->explanation),
-                      json_object_get_string(explanation), "explanation", error) < 0)
-        return -1;
-    }
-    size_t choice_count = json_object_array_length(choices);
-    if (choice_count < 2U || choice_count > 10U) return -1;
-    target->choices = calloc(choice_count, sizeof(*target->choices));
-    if (target->choices == NULL) return -1;
-    target->choice_count = choice_count;
-    bool answer_found = false;
-    for (size_t choice_index = 0U; choice_index < choice_count; choice_index++) {
-      json_object *choice = json_object_array_get_idx(choices, choice_index);
-      const char *choice_id = required_string(choice, "id", error);
-      const char *text = required_string(choice, "text", error);
-      if (choice_id == NULL || text == NULL || !hol_valid_id(choice_id)) return -1;
-      for (size_t previous = 0U; previous < choice_index; previous++)
-        if (strcmp(target->choices[previous].id, choice_id) == 0) {
-          hol_error_set(error, HOL_ERR_SCHEMA, "duplicate quiz choice id");
-          return -1;
-        }
-      if (strcmp(choice_id, answer) == 0) answer_found = true;
-      if (copy_string(target->choices[choice_index].id,
-                      sizeof(target->choices[choice_index].id), choice_id,
-                      "choice id", error) < 0 ||
-          copy_string(target->choices[choice_index].text,
-                      sizeof(target->choices[choice_index].text), text,
-                      "choice text", error) < 0) return -1;
-    }
-    if (!answer_found) {
-      hol_error_set(error, HOL_ERR_SCHEMA, "quiz answer does not name a choice");
-      return -1;
-    }
+static int make_directories(const char *path, hol_error *error) {
+  char copy[4096];
+  if (copy_string(copy, sizeof(copy), path, "path", error) < 0) return -1;
+  for (char *cursor = copy + 1; *cursor != '\0'; cursor++) {
+    if (*cursor != '/') continue;
+    *cursor = '\0';
+    if (mkdir(copy, 0700) < 0 && errno != EEXIST) return -1;
+    *cursor = '/';
   }
   return 0;
 }
 
-static int validate_bundle_file(const hol_course *course, const char *relative,
-                                hol_error *error) {
-  char path[4096];
-  if (hol_join_path(path, sizeof(path), course->root, relative, error) < 0) return -1;
-  struct stat status;
-  if (lstat(path, &status) < 0 || !S_ISREG(status.st_mode) || status.st_nlink != 1) {
-    hol_error_set(error, HOL_ERR_PATH, "bundle file is missing or unsafe: %s", relative);
-    return -1;
-  }
-  return 0;
-}
-
-static bool valid_sha256(const char *value) {
-  if (strlen(value) != 64U) return false;
-  for (size_t index = 0U; index < 64U; index++)
-    if (!((value[index] >= '0' && value[index] <= '9') ||
-          (value[index] >= 'a' && value[index] <= 'f'))) return false;
-  return true;
-}
-
-static json_object *inventory_entry(json_object *files, const char *path) {
-  size_t count = json_object_array_length(files);
-  for (size_t index = 0U; index < count; index++) {
-    json_object *entry = json_object_array_get_idx(files, index);
-    json_object *value = NULL;
-    if (json_object_object_get_ex(entry, "path", &value) &&
-        json_object_is_type(value, json_type_string) &&
-        strcmp(json_object_get_string(value), path) == 0) return entry;
-  }
-  return NULL;
-}
-
-static int audit_directory(const hol_course *course, json_object *files,
-                           const char *relative, size_t *count,
-                           hol_error *error) {
-  char directory_path[4096];
-  if (relative[0] == '\0') {
-    if (copy_string(directory_path, sizeof(directory_path), course->root,
-                    "course root", error) < 0) return -1;
-  } else if (hol_join_path(directory_path, sizeof(directory_path), course->root,
-                           relative, error) < 0) return -1;
-  DIR *directory = opendir(directory_path);
-  if (directory == NULL) return -1;
-  struct dirent *item;
-  while ((item = readdir(directory)) != NULL) {
-    if (strcmp(item->d_name, ".") == 0 || strcmp(item->d_name, "..") == 0) continue;
-    char child_relative[HOL_PATH_MAX + 1];
-    int written = relative[0] == '\0'
-      ? snprintf(child_relative, sizeof(child_relative), "%s", item->d_name)
-      : snprintf(child_relative, sizeof(child_relative), "%s/%s", relative, item->d_name);
-    if (written < 0 || (size_t)written >= sizeof(child_relative) ||
-        !hol_safe_relative_path(child_relative)) {
-      (void)closedir(directory);
-      return -1;
-    }
-    char child_path[4096];
-    if (hol_join_path(child_path, sizeof(child_path), course->root, child_relative,
-                      error) < 0) {
+static int remove_tree(const char *path) {
+  DIR *directory = opendir(path);
+  if (directory == NULL) return errno == ENOENT ? 0 : -1;
+  struct dirent *entry;
+  while ((entry = readdir(directory)) != NULL) {
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+    char child[4096];
+    int length = snprintf(child, sizeof(child), "%s/%s", path, entry->d_name);
+    if (length < 0 || (size_t)length >= sizeof(child)) {
       (void)closedir(directory);
       return -1;
     }
     struct stat status;
-    if (lstat(child_path, &status) < 0) {
+    if (lstat(child, &status) < 0) {
       (void)closedir(directory);
       return -1;
     }
     if (S_ISDIR(status.st_mode)) {
-      if (audit_directory(course, files, child_relative, count, error) < 0) {
+      if (remove_tree(child) < 0) {
         (void)closedir(directory);
         return -1;
       }
-    } else if (S_ISREG(status.st_mode) && status.st_nlink == 1) {
-      if (strcmp(child_relative, "course.json") == 0) continue;
-      if (inventory_entry(files, child_relative) == NULL) {
-        hol_error_set(error, HOL_ERR_CHECKSUM, "undeclared bundle file: %s",
-                      child_relative);
-        (void)closedir(directory);
-        return -1;
-      }
-      (*count)++;
-    } else {
-      hol_error_set(error, HOL_ERR_PATH, "bundle contains a link or special file");
+    } else if (unlink(child) < 0) {
       (void)closedir(directory);
       return -1;
     }
   }
   (void)closedir(directory);
-  return 0;
+  return rmdir(path);
 }
 
-static int validate_inventory(const hol_course *course, json_object *files,
-                              hol_error *error) {
-  size_t file_count = json_object_array_length(files);
-  if (file_count == 0U || file_count > 100000U) return -1;
-  for (size_t index = 0U; index < file_count; index++) {
-    json_object *entry = json_object_array_get_idx(files, index);
-    const char *path = required_string(entry, "path", error);
-    const char *expected = required_string(entry, "sha256", error);
-    json_object *bytes = required(entry, "bytes", json_type_int, error);
-    if (path == NULL || expected == NULL || bytes == NULL ||
-        !hol_safe_relative_path(path) || !valid_sha256(expected) ||
-        json_object_get_int64(bytes) < 0) return -1;
-    for (size_t previous = 0U; previous < index; previous++) {
-      json_object *other = json_object_array_get_idx(files, previous);
-      json_object *other_path = NULL;
-      (void)json_object_object_get_ex(other, "path", &other_path);
-      if (other_path != NULL && strcmp(json_object_get_string(other_path), path) == 0)
-        return -1;
-    }
-    char absolute[4096];
-    if (hol_join_path(absolute, sizeof(absolute), course->root, path, error) < 0) return -1;
-    struct stat status;
-    if (lstat(absolute, &status) < 0 || !S_ISREG(status.st_mode) ||
-        status.st_nlink != 1 ||
-        (uint64_t)status.st_size != json_object_get_uint64(bytes)) {
-      hol_error_set(error, HOL_ERR_CHECKSUM, "bundle size mismatch: %s", path);
-      return -1;
-    }
-    char actual[65];
-    if (hol_sha256_file(absolute, actual, error) < 0 || strcmp(actual, expected) != 0) {
-      hol_error_set(error, HOL_ERR_CHECKSUM, "bundle checksum mismatch: %s", path);
-      return -1;
-    }
-  }
-  size_t discovered = 0U;
-  if (audit_directory(course, files, "", &discovered, error) < 0 ||
-      discovered != file_count) return -1;
-  return 0;
-}
-
-static int parse_lesson(json_object *object, hol_course *course,
-                        hol_lesson *lesson, hol_error *error) {
-  const char *id = required_string(object, "id", error);
-  const char *title = required_string(object, "title", error);
-  const char *kind = required_string(object, "kind", error);
-  const char *content = required_string(object, "content", error);
-  if (id == NULL || title == NULL || kind == NULL || content == NULL || !hol_valid_id(id) ||
-      !hol_safe_relative_path(content)) return -1;
-  if (strcmp(kind, "reading") == 0) lesson->kind = HOL_LESSON_READING;
-  else if (strcmp(kind, "exercise") == 0) lesson->kind = HOL_LESSON_EXERCISE;
-  else if (strcmp(kind, "quiz") == 0) lesson->kind = HOL_LESSON_QUIZ;
-  else return -1;
-  if (copy_string(lesson->id, sizeof(lesson->id), id, "lesson id", error) < 0 ||
-      copy_string(lesson->title, sizeof(lesson->title), title, "lesson title", error) < 0 ||
-      copy_string(lesson->content_path, sizeof(lesson->content_path), content,
-                  "lesson content", error) < 0 ||
-      validate_bundle_file(course, content, error) < 0) return -1;
-
-  json_object *workspace = NULL;
-  if (json_object_object_get_ex(object, "workspace", &workspace) &&
-      !json_object_is_type(workspace, json_type_null)) {
-    const char *default_file = required_string(workspace, "default_file", error);
-    json_object *files = required(workspace, "files", json_type_array, error);
-    if (default_file == NULL || files == NULL || !hol_safe_relative_path(default_file)) return -1;
-    size_t file_count = json_object_array_length(files);
-    if (file_count == 0U || file_count > 256U) return -1;
-    lesson->files = calloc(file_count, sizeof(*lesson->files));
-    if (lesson->files == NULL) return -1;
-    lesson->file_count = file_count;
-    if (copy_string(lesson->default_file, sizeof(lesson->default_file), default_file,
-                    "default file", error) < 0) return -1;
-    bool default_found = false;
-    for (size_t index = 0U; index < file_count; index++) {
-      if (parse_file(json_object_array_get_idx(files, index), &lesson->files[index],
-                     error) < 0 ||
-          validate_bundle_file(course, lesson->files[index].source, error) < 0) return -1;
-      if (strcmp(lesson->files[index].target, default_file) == 0 &&
-          lesson->files[index].role != HOL_FILE_HIDDEN) default_found = true;
-    }
-    if (!default_found) return -1;
-  }
-
-  json_object *runner = NULL;
-  if (json_object_object_get_ex(object, "runner", &runner) &&
-      !json_object_is_type(runner, json_type_null)) {
-    const char *runner_id = required_string(runner, "id", error);
-    const char *profile = required_string(runner, "profile", error);
-    json_object *check = required(runner, "check", json_type_object, error);
-    const char *check_kind = check != NULL ? required_string(check, "kind", error) : NULL;
-    bool c_runner = runner_id != NULL && profile != NULL &&
-      strcmp(runner_id, "c") == 0 &&
-      (strcmp(profile, "c11") == 0 || strcmp(profile, "c11-32") == 0 ||
-       strcmp(profile, "c23") == 0);
-    bool sql_runner = runner_id != NULL && profile != NULL &&
-      strcmp(runner_id, "sql") == 0 && strcmp(profile, "sqlite3") == 0;
-    if (runner_id == NULL || profile == NULL || check_kind == NULL ||
-        (!c_runner && !sql_runner)) {
-      hol_error_set(error, HOL_ERR_UNSUPPORTED, "unsupported runner profile");
-      return -1;
-    }
-    (void)copy_string(lesson->runner.id, sizeof(lesson->runner.id), runner_id,
-                      "runner", error);
-    (void)copy_string(lesson->runner.profile, sizeof(lesson->runner.profile), profile,
-                      "runner profile", error);
-    if (strcmp(check_kind, "stdout") == 0 && c_runner) {
-      const char *expected = required_string(check, "expected", error);
-      if (expected == NULL || strlen(expected) > HOL_OUTPUT_MAX) return -1;
-      lesson->runner.check_kind = HOL_CHECK_STDOUT;
-      lesson->runner.expected_output = strdup(expected);
-      if (lesson->runner.expected_output == NULL) return -1;
-    } else if (strcmp(check_kind, "tests") == 0) {
-      lesson->runner.check_kind = HOL_CHECK_TESTS;
-    } else return -1;
-  }
-
-  json_object *quiz = NULL;
-  if (json_object_object_get_ex(object, "quiz", &quiz) &&
-      !json_object_is_type(quiz, json_type_null) && parse_quiz(quiz, lesson, error) < 0) {
+static int extract_cartridge(const char *source, char root[4096], hol_error *error) {
+  size_t source_length = strlen(source);
+  if (source_length < 6U || strcmp(source + source_length - 6U, ".imscc") != 0) {
+    hol_error_set(error, HOL_ERR_UNSUPPORTED, "course package must use the .imscc extension");
     return -1;
   }
-  json_object *media = NULL;
-  if (json_object_object_get_ex(object, "media", &media)) {
-    if (!json_object_is_type(media, json_type_array) ||
-        json_object_array_length(media) > 64U) return -1;
-    lesson->media_count = json_object_array_length(media);
-    if (lesson->media_count > 0U) {
-      lesson->media_paths = calloc(lesson->media_count, sizeof(*lesson->media_paths));
-      if (lesson->media_paths == NULL) return -1;
-    }
-    for (size_t index = 0U; index < lesson->media_count; index++) {
-      json_object *item = json_object_array_get_idx(media, index);
-      if (!json_object_is_type(item, json_type_string)) return -1;
-      const char *media_path = json_object_get_string(item);
-      if ((size_t)json_object_get_string_len(item) != strlen(media_path) ||
-          !hol_safe_relative_path(media_path) ||
-          validate_bundle_file(course, media_path, error) < 0) return -1;
-      lesson->media_paths[index] = strdup(media_path);
-      if (lesson->media_paths[index] == NULL) return -1;
-    }
-  }
-  if ((lesson->kind == HOL_LESSON_EXERCISE && lesson->file_count == 0U) ||
-      (lesson->kind == HOL_LESSON_QUIZ && lesson->question_count == 0U)) return -1;
-  return 0;
-}
-
-int hol_course_load(const char *root, hol_course **output, hol_error *error) {
-  if (root == NULL || output == NULL) return -1;
-  *output = NULL;
   char canonical[4096];
-  if (realpath(root, canonical) == NULL) {
-    hol_error_set(error, HOL_ERR_PATH, "cannot resolve course root");
+  if (realpath(source, canonical) == NULL) {
+    hol_error_set(error, HOL_ERR_PATH, "cannot resolve cartridge path");
     return -1;
   }
-  char manifest_path[4096];
-  int written = snprintf(manifest_path, sizeof(manifest_path), "%s/course.json", canonical);
-  if (written < 0 || (size_t)written >= sizeof(manifest_path)) return -1;
-  size_t manifest_length = 0U;
-  char *manifest = hol_read_text(manifest_path, 1024U * 1024U, &manifest_length, error);
-  if (manifest == NULL) return -1;
-  json_tokener *tokener = json_tokener_new_ex(32);
-  json_object *root_object = json_tokener_parse_ex(tokener, manifest, (int)manifest_length);
-  enum json_tokener_error json_error = json_tokener_get_error(tokener);
-  free(manifest);
-  json_tokener_free(tokener);
-  if (root_object == NULL || json_error != json_tokener_success ||
-      !json_object_is_type(root_object, json_type_object)) {
-    if (root_object != NULL) json_object_put(root_object);
-    hol_error_set(error, HOL_ERR_JSON, "course.json is not valid JSON");
+  (void)snprintf(root, 4096, "/tmp/hol-imscc-XXXXXX");
+  if (mkdtemp(root) == NULL) return -1;
+  struct archive *archive = archive_read_new();
+  if (archive == NULL) goto failure;
+  archive_read_support_format_zip(archive);
+  if (archive_read_open_filename(archive, canonical, 64U * 1024U) != ARCHIVE_OK)
+    goto archive_failure;
+  size_t entries = 0U;
+  uint64_t expanded = 0U;
+  struct archive_entry *entry = NULL;
+  while (archive_read_next_header(archive, &entry) == ARCHIVE_OK) {
+    const char *archive_path = archive_entry_pathname(entry);
+    char relative[HOL_PATH_MAX + 1];
+    if (archive_path == NULL ||
+        copy_string(relative, sizeof(relative), archive_path, "archive path", error) < 0)
+      goto archive_failure;
+    size_t relative_length = strlen(relative);
+    while (relative_length > 0U && relative[relative_length - 1U] == '/')
+      relative[--relative_length] = '\0';
+    la_int64_t entry_size = archive_entry_size(entry);
+    if (!hol_safe_relative_path(relative) ||
+        archive_entry_symlink(entry) != NULL || archive_entry_hardlink(entry) != NULL ||
+        entry_size < 0 || ++entries > 100000U ||
+        (uint64_t)entry_size > maximum_expanded_bytes - expanded) goto archive_failure;
+    expanded += (uint64_t)entry_size;
+    char destination[4096];
+    if (hol_join_path(destination, sizeof(destination), root, relative, error) < 0)
+      goto archive_failure;
+    mode_t type = archive_entry_filetype(entry);
+    if (type == AE_IFDIR) {
+      if (make_directories(destination, error) < 0 ||
+          (mkdir(destination, 0700) < 0 && errno != EEXIST)) goto archive_failure;
+      continue;
+    }
+    if (type != AE_IFREG || make_directories(destination, error) < 0)
+      goto archive_failure;
+    int output = open(destination, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (output < 0) goto archive_failure;
+    char buffer[64U * 1024U];
+    for (;;) {
+      la_ssize_t count = archive_read_data(archive, buffer, sizeof(buffer));
+      if (count < 0) {
+        (void)close(output);
+        goto archive_failure;
+      }
+      if (count == 0) break;
+      size_t offset = 0U;
+      while (offset < (size_t)count) {
+        ssize_t written = write(output, buffer + offset, (size_t)count - offset);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0) {
+          (void)close(output);
+          goto archive_failure;
+        }
+        offset += (size_t)written;
+      }
+    }
+    if (close(output) < 0) goto archive_failure;
+  }
+  if (archive_read_close(archive) != ARCHIVE_OK ||
+      archive_read_free(archive) != ARCHIVE_OK || entries == 0U) goto failure;
+  char manifest[4096];
+  if (hol_join_path(manifest, sizeof(manifest), root, "imsmanifest.xml", error) < 0 ||
+      access(manifest, R_OK) < 0) goto failure;
+  return 0;
+
+archive_failure:
+  (void)archive_read_close(archive);
+  (void)archive_read_free(archive);
+failure:
+  (void)remove_tree(root);
+  hol_error_set(error, HOL_ERR_SCHEMA, "unsafe or invalid Common Cartridge package");
+  return -1;
+}
+
+static xmlNode *child(xmlNode *parent, const char *name) {
+  for (xmlNode *node = parent != NULL ? parent->children : NULL;
+       node != NULL; node = node->next)
+    if (node->type == XML_ELEMENT_NODE &&
+        strcmp((const char *)node->name, name) == 0) return node;
+  return NULL;
+}
+
+static xmlNode *descendant(xmlNode *parent, const char *name) {
+  for (xmlNode *node = parent != NULL ? parent->children : NULL;
+       node != NULL; node = node->next) {
+    if (node->type != XML_ELEMENT_NODE) continue;
+    if (strcmp((const char *)node->name, name) == 0) return node;
+    xmlNode *nested = descendant(node, name);
+    if (nested != NULL) return nested;
+  }
+  return NULL;
+}
+
+static int node_text(xmlNode *node, char *target, size_t capacity,
+                     const char *field, hol_error *error) {
+  if (node == NULL) return -1;
+  xmlChar *value = xmlNodeGetContent(node);
+  if (value == NULL) return -1;
+  int result = copy_string(target, capacity, (const char *)value, field, error);
+  xmlFree(value);
+  return result;
+}
+
+static int attribute(xmlNode *node, const char *name, char *target, size_t capacity,
+                     hol_error *error) {
+  xmlChar *value = node != NULL ? xmlGetProp(node, (const xmlChar *)name) : NULL;
+  if (value == NULL) return -1;
+  int result = copy_string(target, capacity, (const char *)value, name, error);
+  xmlFree(value);
+  return result;
+}
+
+static xmlNode *resource_by_id(xmlNode *resources, const char *identifier) {
+  for (xmlNode *node = resources != NULL ? resources->children : NULL;
+       node != NULL; node = node->next) {
+    if (node->type != XML_ELEMENT_NODE ||
+        strcmp((const char *)node->name, "resource") != 0) continue;
+    xmlChar *value = xmlGetProp(node, (const xmlChar *)"identifier");
+    bool matches = value != NULL && strcmp((const char *)value, identifier) == 0;
+    xmlFree(value);
+    if (matches) return node;
+  }
+  return NULL;
+}
+
+static int write_reader_text(const hol_course *course, const char *id,
+                             const char *text, char relative[HOL_PATH_MAX + 1],
+                             hol_error *error) {
+  int length = snprintf(relative, HOL_PATH_MAX + 1U, ".reader/%s.txt", id);
+  if (length < 0 || length > HOL_PATH_MAX) return -1;
+  char path[4096];
+  if (hol_join_path(path, sizeof(path), course->root, relative, error) < 0) return -1;
+  return hol_atomic_write(path, text, strlen(text), error);
+}
+
+static int parse_web_content(hol_course *course, hol_lesson *lesson,
+                             xmlNode *resource, hol_error *error) {
+  char href[HOL_PATH_MAX + 1];
+  if (attribute(resource, "href", href, sizeof(href), error) < 0 ||
+      !hol_safe_relative_path(href)) return -1;
+  char path[4096];
+  if (hol_join_path(path, sizeof(path), course->root, href, error) < 0) return -1;
+  xmlDoc *document = htmlReadFile(path, NULL, HTML_PARSE_NONET | HTML_PARSE_NOERROR |
+                                              HTML_PARSE_NOWARNING);
+  if (document == NULL) return -1;
+  xmlChar *content = xmlNodeGetContent(xmlDocGetRootElement(document));
+  if (content == NULL) {
+    xmlFreeDoc(document);
     return -1;
   }
-  hol_course *course = calloc(1U, sizeof(*course));
-  if (course == NULL) {
-    json_object_put(root_object);
+  lesson->kind = HOL_LESSON_READING;
+  int result = write_reader_text(course, lesson->id, (const char *)content,
+                                 lesson->content_path, error);
+  xmlFree(content);
+  xmlFreeDoc(document);
+  return result;
+}
+
+static int parse_qti_item(xmlNode *item, hol_quiz_question *question,
+                          hol_error *error) {
+  if (attribute(item, "ident", question->id, sizeof(question->id), error) < 0 ||
+      !hol_valid_id(question->id) ||
+      node_text(descendant(descendant(item, "presentation"), "mattext"),
+                question->prompt, sizeof(question->prompt), "prompt", error) < 0)
     return -1;
+  xmlNode *render = descendant(item, "render_choice");
+  size_t count = 0U;
+  for (xmlNode *node = render != NULL ? render->children : NULL;
+       node != NULL; node = node->next)
+    if (node->type == XML_ELEMENT_NODE &&
+        strcmp((const char *)node->name, "response_label") == 0) count++;
+  if (count < 2U || count > 10U) return -1;
+  question->choices = calloc(count, sizeof(*question->choices));
+  if (question->choices == NULL) return -1;
+  question->choice_count = count;
+  size_t index = 0U;
+  for (xmlNode *node = render->children; node != NULL; node = node->next) {
+    if (node->type != XML_ELEMENT_NODE ||
+        strcmp((const char *)node->name, "response_label") != 0) continue;
+    if (attribute(node, "ident", question->choices[index].id,
+                  sizeof(question->choices[index].id), error) < 0 ||
+        node_text(descendant(node, "mattext"), question->choices[index].text,
+                  sizeof(question->choices[index].text), "choice", error) < 0)
+      return -1;
+    index++;
   }
-  (void)copy_string(course->root, sizeof(course->root), canonical, "course root", error);
-  json_object *schema = required(root_object, "schema_version", json_type_int, error);
-  const char *id = required_string(root_object, "id", error);
-  const char *version = required_string(root_object, "version", error);
-  const char *minimum = required_string(root_object, "minimum_app_version", error);
-  const char *title = required_string(root_object, "title", error);
-  const char *description = required_string(root_object, "description", error);
-  json_object *license = required(root_object, "license", json_type_object, error);
-  json_object *files = required(root_object, "files", json_type_array, error);
-  json_object *chapters = required(root_object, "chapters", json_type_array, error);
-  if (schema == NULL || id == NULL || version == NULL || minimum == NULL || title == NULL ||
-      description == NULL || license == NULL || files == NULL || chapters == NULL ||
-      json_object_get_int(schema) != 1 || !hol_valid_id(id)) goto failure;
-  if (!hol_version_supported(minimum)) {
-    hol_error_set(error, HOL_ERR_UNSUPPORTED, "course requires a newer application version");
+  if (node_text(descendant(item, "varequal"), question->answer,
+                sizeof(question->answer), "answer", error) < 0) return -1;
+  xmlNode *feedback = descendant(item, "itemfeedback");
+  if (feedback != NULL)
+    (void)node_text(descendant(feedback, "mattext"), question->explanation,
+                    sizeof(question->explanation), "feedback", error);
+  return 0;
+}
+
+static int parse_qti(hol_course *course, hol_lesson *lesson, xmlNode *resource,
+                     hol_error *error) {
+  xmlNode *file = child(resource, "file");
+  char href[HOL_PATH_MAX + 1];
+  if (attribute(file, "href", href, sizeof(href), error) < 0 ||
+      !hol_safe_relative_path(href)) return -1;
+  char path[4096];
+  if (hol_join_path(path, sizeof(path), course->root, href, error) < 0) return -1;
+  xmlDoc *document = xmlReadFile(path, NULL, XML_PARSE_NONET | XML_PARSE_NOBLANKS);
+  if (document == NULL) return -1;
+  xmlNode *root = xmlDocGetRootElement(document);
+  if (root == NULL || root->ns == NULL ||
+      strcmp((const char *)root->ns->href, qti_namespace) != 0 ||
+      strcmp((const char *)root->name, "questestinterop") != 0) goto failure;
+  xmlNode *assessment = child(root, "assessment");
+  xmlNode *section = child(assessment, "section");
+  size_t count = 0U;
+  for (xmlNode *node = section != NULL ? section->children : NULL;
+       node != NULL; node = node->next)
+    if (node->type == XML_ELEMENT_NODE && strcmp((const char *)node->name, "item") == 0)
+      count++;
+  if (count == 0U || count > 100U) goto failure;
+  lesson->questions = calloc(count, sizeof(*lesson->questions));
+  if (lesson->questions == NULL) goto failure;
+  lesson->question_count = count;
+  lesson->quiz_passing_score = count;
+  size_t index = 0U;
+  for (xmlNode *node = section->children; node != NULL; node = node->next) {
+    if (node->type != XML_ELEMENT_NODE || strcmp((const char *)node->name, "item") != 0)
+      continue;
+    if (parse_qti_item(node, &lesson->questions[index++], error) < 0) goto failure;
+  }
+  lesson->kind = HOL_LESSON_QUIZ;
+  char summary[HOL_TEXT_MAX + 64U];
+  (void)snprintf(summary, sizeof(summary), "%s\n\nThis assessment contains %zu questions.\n",
+                 lesson->title, count);
+  if (write_reader_text(course, lesson->id, summary, lesson->content_path, error) < 0)
     goto failure;
-  }
-  const char *spdx = required_string(license, "spdx", error);
-  const char *license_file = required_string(license, "file", error);
-  const char *attribution = required_string(license, "attribution", error);
-  if (spdx == NULL || license_file == NULL || attribution == NULL ||
-      !hol_safe_relative_path(license_file)) goto failure;
-  course->schema_version = 1U;
-  if (copy_string(course->id, sizeof(course->id), id, "course id", error) < 0 ||
-      copy_string(course->version, sizeof(course->version), version, "version", error) < 0 ||
-      copy_string(course->minimum_app_version, sizeof(course->minimum_app_version), minimum,
-                  "minimum app version", error) < 0 ||
-      copy_string(course->title, sizeof(course->title), title, "title", error) < 0 ||
-      copy_string(course->description, sizeof(course->description), description,
-                  "description", error) < 0 ||
-      copy_string(course->license_spdx, sizeof(course->license_spdx), spdx, "license", error) < 0 ||
-      copy_string(course->license_file, sizeof(course->license_file), license_file,
-                  "license file", error) < 0 ||
-      copy_string(course->attribution, sizeof(course->attribution), attribution,
-                  "attribution", error) < 0 ||
-      validate_inventory(course, files, error) < 0 ||
-      validate_bundle_file(course, license_file, error) < 0) goto failure;
-  size_t chapter_count = json_object_array_length(chapters);
-  if (chapter_count == 0U || chapter_count > 256U) goto failure;
-  course->chapters = calloc(chapter_count, sizeof(*course->chapters));
-  if (course->chapters == NULL) goto failure;
-  course->chapter_count = chapter_count;
-  for (size_t chapter_index = 0U; chapter_index < chapter_count; chapter_index++) {
-    json_object *chapter = json_object_array_get_idx(chapters, chapter_index);
-    const char *chapter_id = required_string(chapter, "id", error);
-    const char *chapter_title = required_string(chapter, "title", error);
-    json_object *lessons = required(chapter, "lessons", json_type_array, error);
-    if (chapter_id == NULL || chapter_title == NULL || lessons == NULL ||
-        !hol_valid_id(chapter_id)) goto failure;
-    hol_chapter *target = &course->chapters[chapter_index];
-    if (copy_string(target->id, sizeof(target->id), chapter_id, "chapter id", error) < 0 ||
-        copy_string(target->title, sizeof(target->title), chapter_title,
-                    "chapter title", error) < 0) goto failure;
-    size_t lesson_count = json_object_array_length(lessons);
-    if (lesson_count == 0U || lesson_count > 10000U ||
-        course->lesson_count > 10000U - lesson_count) goto failure;
-    target->lessons = calloc(lesson_count, sizeof(*target->lessons));
-    if (target->lessons == NULL) goto failure;
-    target->lesson_count = lesson_count;
-    course->lesson_count += lesson_count;
-    for (size_t lesson_index = 0U; lesson_index < lesson_count; lesson_index++) {
-      if (parse_lesson(json_object_array_get_idx(lessons, lesson_index), course,
-                       &target->lessons[lesson_index], error) < 0) goto failure;
-    }
-  }
-  for (size_t chapter = 0U; chapter < course->chapter_count; chapter++) {
-    for (size_t previous = 0U; previous < chapter; previous++)
-      if (strcmp(course->chapters[chapter].id, course->chapters[previous].id) == 0) {
-        hol_error_set(error, HOL_ERR_SCHEMA, "duplicate chapter id");
-        goto failure;
-      }
-    for (size_t lesson_index = 0U;
-         lesson_index < course->chapters[chapter].lesson_count; lesson_index++) {
-      const char *lesson_id = course->chapters[chapter].lessons[lesson_index].id;
-      size_t seen = 0U;
-      for (size_t candidate = 0U; candidate < course->lesson_count; candidate++) {
-        const hol_lesson *other = hol_course_lesson(course, candidate);
-        if (other != NULL && strcmp(other->id, lesson_id) == 0) seen++;
-      }
-      if (seen != 1U) {
-        hol_error_set(error, HOL_ERR_SCHEMA, "duplicate lesson id");
-        goto failure;
-      }
-    }
-  }
-  json_object_put(root_object);
-  *output = course;
+  xmlFreeDoc(document);
   return 0;
 
 failure:
-  json_object_put(root_object);
+  xmlFreeDoc(document);
+  return -1;
+}
+
+static int parse_lesson(hol_course *course, hol_lesson *lesson, xmlNode *item,
+                        xmlNode *resources, hol_error *error) {
+  char reference[HOL_ID_MAX + 1];
+  if (attribute(item, "identifier", lesson->id, sizeof(lesson->id), error) < 0 ||
+      !hol_valid_id(lesson->id) ||
+      attribute(item, "identifierref", reference, sizeof(reference), error) < 0 ||
+      node_text(child(item, "title"), lesson->title, sizeof(lesson->title),
+                "lesson title", error) < 0) return -1;
+  xmlNode *resource = resource_by_id(resources, reference);
+  char type[128];
+  if (resource == NULL || attribute(resource, "type", type, sizeof(type), error) < 0)
+    return -1;
+  if (strcmp(type, "webcontent") == 0)
+    return parse_web_content(course, lesson, resource, error);
+  if (strcmp(type, qti_assessment_type) == 0)
+    return parse_qti(course, lesson, resource, error);
+  hol_error_set(error, HOL_ERR_UNSUPPORTED, "unsupported Common Cartridge resource: %s", type);
+  return -1;
+}
+
+static int parse_organization(hol_course *course, xmlNode *organizations,
+                              xmlNode *resources, hol_error *error) {
+  xmlNode *organization = child(organizations, "organization");
+  xmlNode *root_item = child(organization, "item");
+  if (organization == NULL || root_item == NULL) return -1;
+  size_t chapter_count = 0U;
+  for (xmlNode *node = root_item->children; node != NULL; node = node->next)
+    if (node->type == XML_ELEMENT_NODE && strcmp((const char *)node->name, "item") == 0)
+      chapter_count++;
+  if (chapter_count == 0U || chapter_count > 256U) return -1;
+  course->chapters = calloc(chapter_count, sizeof(*course->chapters));
+  if (course->chapters == NULL) return -1;
+  course->chapter_count = chapter_count;
+  size_t chapter_index = 0U;
+  for (xmlNode *node = root_item->children; node != NULL; node = node->next) {
+    if (node->type != XML_ELEMENT_NODE || strcmp((const char *)node->name, "item") != 0)
+      continue;
+    hol_chapter *chapter = &course->chapters[chapter_index++];
+    if (attribute(node, "identifier", chapter->id, sizeof(chapter->id), error) < 0 ||
+        !hol_valid_id(chapter->id) ||
+        node_text(child(node, "title"), chapter->title, sizeof(chapter->title),
+                  "chapter title", error) < 0) return -1;
+    size_t lesson_count = 0U;
+    for (xmlNode *lesson = node->children; lesson != NULL; lesson = lesson->next)
+      if (lesson->type == XML_ELEMENT_NODE &&
+          strcmp((const char *)lesson->name, "item") == 0) lesson_count++;
+    if (lesson_count == 0U || course->lesson_count > 10000U - lesson_count) return -1;
+    chapter->lessons = calloc(lesson_count, sizeof(*chapter->lessons));
+    if (chapter->lessons == NULL) return -1;
+    chapter->lesson_count = lesson_count;
+    size_t lesson_index = 0U;
+    for (xmlNode *lesson = node->children; lesson != NULL; lesson = lesson->next) {
+      if (lesson->type != XML_ELEMENT_NODE ||
+          strcmp((const char *)lesson->name, "item") != 0) continue;
+      if (parse_lesson(course, &chapter->lessons[lesson_index++], lesson,
+                       resources, error) < 0) return -1;
+    }
+    course->lesson_count += lesson_count;
+  }
+  return 0;
+}
+
+int hol_course_load(const char *source, hol_course **output, hol_error *error) {
+  if (source == NULL || output == NULL) return -1;
+  *output = NULL;
+  hol_course *course = calloc(1U, sizeof(*course));
+  if (course == NULL) return -1;
+  if (realpath(source, course->source_path) == NULL ||
+      extract_cartridge(source, course->root, error) < 0) goto failure;
+  course->owns_root = true;
+  char manifest_path[4096];
+  if (hol_join_path(manifest_path, sizeof(manifest_path), course->root,
+                    "imsmanifest.xml", error) < 0) goto failure;
+  xmlDoc *document = xmlReadFile(manifest_path, NULL, XML_PARSE_NONET | XML_PARSE_NOBLANKS);
+  if (document == NULL) goto failure;
+  xmlNode *manifest = xmlDocGetRootElement(document);
+  if (manifest == NULL || manifest->ns == NULL ||
+      strcmp((const char *)manifest->name, "manifest") != 0 ||
+      strcmp((const char *)manifest->ns->href, manifest_namespace) != 0) goto xml_failure;
+  xmlNode *metadata = child(manifest, "metadata");
+  char schema[64];
+  char schema_version[32];
+  if (node_text(child(metadata, "schema"), schema, sizeof(schema), "schema", error) < 0 ||
+      node_text(child(metadata, "schemaversion"), schema_version,
+                sizeof(schema_version), "schema version", error) < 0 ||
+      strcmp(schema, "IMS Common Cartridge") != 0 ||
+      strcmp(schema_version, "1.3.0") != 0) goto xml_failure;
+  xmlNode *lom = child(metadata, "lom");
+  xmlNode *general = child(lom, "general");
+  xmlNode *lifecycle = child(lom, "lifeCycle");
+  xmlNode *rights = child(lom, "rights");
+  if (node_text(child(child(general, "identifier"), "entry"), course->id,
+                sizeof(course->id), "course id", error) < 0 ||
+      !hol_valid_id(course->id) ||
+      node_text(child(child(general, "title"), "string"), course->title,
+                sizeof(course->title), "title", error) < 0 ||
+      node_text(child(child(general, "description"), "string"), course->description,
+                sizeof(course->description), "description", error) < 0 ||
+      node_text(child(child(lifecycle, "version"), "string"), course->version,
+                sizeof(course->version), "version", error) < 0 ||
+      node_text(child(child(rights, "description"), "string"), course->attribution,
+                sizeof(course->attribution), "rights", error) < 0) goto xml_failure;
+  course->schema_version = 1U;
+  (void)snprintf(course->minimum_app_version, sizeof(course->minimum_app_version), "%s",
+                 HOL_APP_VERSION);
+  const char *spdx = strstr(course->attribution, "SPDX-License-Identifier:");
+  if (spdx != NULL) {
+    spdx += strlen("SPDX-License-Identifier:");
+    while (*spdx == ' ') spdx++;
+    size_t length = strcspn(spdx, "\r\n");
+    if (length >= sizeof(course->license_spdx)) goto xml_failure;
+    memcpy(course->license_spdx, spdx, length);
+    course->license_spdx[length] = '\0';
+  } else (void)snprintf(course->license_spdx, sizeof(course->license_spdx), "NOASSERTION");
+  (void)snprintf(course->license_file, sizeof(course->license_file), "LICENSE");
+  if (parse_organization(course, child(manifest, "organizations"),
+                         child(manifest, "resources"), error) < 0) goto xml_failure;
+  xmlFreeDoc(document);
+  *output = course;
+  return 0;
+
+xml_failure:
+  xmlFreeDoc(document);
+failure:
   hol_course_free(course);
   if (error != NULL && error->message[0] == '\0')
-    hol_error_set(error, HOL_ERR_SCHEMA, "course manifest is invalid");
+    hol_error_set(error, HOL_ERR_SCHEMA, "invalid Common Cartridge package");
   return -1;
 }
 
@@ -530,5 +488,6 @@ void hol_course_free(hol_course *course) {
     free(course->chapters[chapter].lessons);
   }
   free(course->chapters);
+  if (course->owns_root) (void)remove_tree(course->root);
   free(course);
 }
