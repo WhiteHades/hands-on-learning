@@ -127,7 +127,7 @@ static void sha256_finish(sha256_context *context, unsigned char digest[32]) {
   }
 }
 
-static int sha256_file(const char *path, char hexadecimal[65], hol_error *error) {
+int hol_sha256_file(const char *path, char hexadecimal[65], hol_error *error) {
   int descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
   if (descriptor < 0) {
     hol_error_set(error, HOL_ERR_IO, "cannot hash %s", path);
@@ -583,7 +583,7 @@ static int validate_inventory(const hol_course *course, json_object *files,
       return -1;
     }
     char actual[65];
-    if (sha256_file(absolute, actual, error) < 0 || strcmp(actual, expected) != 0) {
+    if (hol_sha256_file(absolute, actual, error) < 0 || strcmp(actual, expected) != 0) {
       hol_error_set(error, HOL_ERR_CHECKSUM, "bundle checksum mismatch: %s", path);
       return -1;
     }

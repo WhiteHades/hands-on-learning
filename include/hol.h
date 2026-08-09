@@ -204,6 +204,8 @@ int hol_copy_file_if_missing(const char *source, const char *target,
                              hol_error *error);
 char *hol_read_text(const char *path, size_t maximum, size_t *length,
                     hol_error *error);
+int hol_sha256_file(const char *path, char hexadecimal[65],
+                    hol_error *error);
 
 int hol_course_load(const char *root, hol_course **output, hol_error *error);
 const hol_lesson *hol_course_lesson(const hol_course *course, size_t index);
