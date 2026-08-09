@@ -14,8 +14,7 @@ static void usage(FILE *stream) {
     "  hands-on-learning catalog list [CATALOG]\n"
     "  hands-on-learning catalog install ID [CATALOG] [DESTINATION]\n"
     "  hands-on-learning --version\n\n"
-    "The default course is the bundled original demo. Set HOL_COURSE to use\n"
-    "another installed IMS Common Cartridge (.imscc) file.\n",
+    "Select an IMS Common Cartridge with --course or HOL_COURSE.\n",
     HOL_APP_NAME, HOL_APP_VERSION);
 }
 
@@ -38,12 +37,21 @@ static int default_install_destination(char output[4096]) {
   return length >= 0 && length < 4096 ? 0 : -1;
 }
 
-static const char *default_course(void) {
-  const char *configured = getenv("HOL_COURSE");
-  if (configured != NULL && configured[0] != '\0') return configured;
-  if (access("build/hol.demo-c-1.0.0.imscc", R_OK) == 0)
-    return "build/hol.demo-c-1.0.0.imscc";
-  return "/usr/local/share/hands-on-learning/courses/hol.demo-c-1.0.0.imscc";
+static int choose_course(char course_path[4096], hol_error *error) {
+  char course_id[HOL_ID_MAX + 1];
+  char destination[4096];
+  const char *catalog = default_catalog();
+  if (default_install_destination(destination) < 0) {
+    hol_error_set(error, HOL_ERR_PATH,
+                  "cannot determine the course installation directory");
+    return -1;
+  }
+  if (hol_catalog_select(catalog, stdin, stdout, course_id, error) < 0) return -1;
+  (void)printf("\nPreparing the course. The first download can take a few minutes.\n");
+  (void)fflush(stdout);
+  if (hol_catalog_install_path(catalog, course_id, destination, course_path, 4096U,
+                               error) < 0) return -1;
+  return 0;
 }
 
 int main(int argc, char **argv) {
@@ -92,11 +100,19 @@ int main(int argc, char **argv) {
     (void)printf("installed %s in %s\n", argv[3], destination);
     return 0;
   }
-  const char *course = default_course();
+  char selected_course[4096];
+  const char *course = getenv("HOL_COURSE");
   if (argc == 3 && strcmp(argv[1], "--course") == 0) course = argv[2];
   else if (argc != 1) {
     usage(stderr);
     return 2;
+  }
+  if (course == NULL || course[0] == '\0') {
+    if (choose_course(selected_course, &error) < 0) {
+      (void)fprintf(stderr, "cannot open course: %s\n", error.message);
+      return 1;
+    }
+    course = selected_course;
   }
   if (hol_ui_run(course, &error) < 0) {
     (void)fprintf(stderr, "%s: %s\n", HOL_APP_NAME,
