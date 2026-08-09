@@ -18,6 +18,40 @@
         "bytes": 20480,
         "sha256": "7fd0d7362b56ba1cec5b9113f83dfb658c4995d0f86b908b6d2a7fe35e950cfb"
       }
+    },
+    {
+      "id": "bootdev.memory-management-c",
+      "version": "1.0.0",
+      "title": "Learn Memory Management in C",
+      "description": "Learn manual memory management and build garbage collectors.",
+      "minimum_app_version": "0.1.0",
+      "lesson_count": 102,
+      "license": {
+        "spdx": "LicenseRef-Bootdev-Course",
+        "attribution": "Course content copyright Boot.dev."
+      },
+      "bundle": {
+        "url": "https://github.com/WhiteHades/hands-on-learning/releases/download/v0.1.0/bootdev.memory-management-c-1.0.0.holcourse.tar",
+        "bytes": 651520000,
+        "sha256": "3aa6d0db042563a2432a7b0a5e7753c014419db532f02e85370f962616cc7317"
+      }
+    },
+    {
+      "id": "bootdev.learn-sql",
+      "version": "1.0.0",
+      "title": "Learn SQL",
+      "description": "Learn SQL queries, database design, joins, normalization, and indexes.",
+      "minimum_app_version": "0.1.0",
+      "lesson_count": 95,
+      "license": {
+        "spdx": "LicenseRef-Bootdev-Course",
+        "attribution": "Course content copyright Boot.dev."
+      },
+      "bundle": {
+        "url": "https://github.com/WhiteHades/hands-on-learning/releases/download/v0.1.0/bootdev.learn-sql-1.0.0.holcourse.tar",
+        "bytes": 864870400,
+        "sha256": "fe01512c21814b74fe9b0c07c65db119156e956b391ddba2ff87db51f189f117"
+      }
     }
   ]
 }

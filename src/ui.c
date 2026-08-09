@@ -57,6 +57,10 @@ typedef struct {
   char *lesson_text;
   char *preview_text;
   char *output;
+  char **course_roots;
+  char **course_titles;
+  size_t course_count;
+  size_t active_course;
 } ui_session;
 
 static int64_t now_ms(void) {
@@ -108,6 +112,96 @@ static void set_output(ui_session *session, const char *text) {
   free(session->output);
   session->output = replacement;
   session->output_scroll = 0U;
+}
+
+static bool ends_with_text(const char *value, const char *suffix) {
+  size_t value_length = strlen(value);
+  size_t suffix_length = strlen(suffix);
+  return value_length >= suffix_length &&
+         strcmp(value + value_length - suffix_length, suffix) == 0;
+}
+
+static int add_course(ui_session *session, const char *root, hol_error *error) {
+  hol_course *course = NULL;
+  if (hol_course_load(root, &course, error) < 0) return -1;
+  for (size_t index = 0U; index < session->course_count; index++) {
+    if (strcmp(session->course_roots[index], course->root) == 0) {
+      hol_course_free(course);
+      return 0;
+    }
+  }
+  size_t count = session->course_count + 1U;
+  char *new_root = strdup(course->root);
+  char *new_title = strdup(course->title);
+  if (new_root == NULL || new_title == NULL) {
+    free(new_root);
+    free(new_title);
+    hol_course_free(course);
+    return -1;
+  }
+  char **roots = realloc(session->course_roots, count * sizeof(*roots));
+  if (roots == NULL) {
+    free(new_root);
+    free(new_title);
+    hol_course_free(course);
+    return -1;
+  }
+  session->course_roots = roots;
+  char **titles = realloc(session->course_titles, count * sizeof(*titles));
+  if (titles == NULL) {
+    free(new_root);
+    free(new_title);
+    hol_course_free(course);
+    return -1;
+  }
+  session->course_titles = titles;
+  session->course_roots[session->course_count] = new_root;
+  session->course_titles[session->course_count] = new_title;
+  session->course_count = count;
+  hol_course_free(course);
+  return 0;
+}
+
+static void scan_courses(ui_session *session, const char *directory) {
+  DIR *entries = opendir(directory);
+  if (entries == NULL) return;
+  struct dirent *entry;
+  while ((entry = readdir(entries)) != NULL) {
+    if (!ends_with_text(entry->d_name, ".holcourse")) continue;
+    char path[4096];
+    int length = snprintf(path, sizeof(path), "%s/%s", directory, entry->d_name);
+    if (length < 0 || (size_t)length >= sizeof(path)) continue;
+    hol_error ignored = {0};
+    (void)add_course(session, path, &ignored);
+  }
+  (void)closedir(entries);
+}
+
+static void discover_courses(ui_session *session) {
+  hol_error ignored = {0};
+  (void)add_course(session, session->course->root, &ignored);
+  char parent[4096];
+  (void)snprintf(parent, sizeof(parent), "%s", session->course->root);
+  char *slash = strrchr(parent, '/');
+  if (slash != NULL) {
+    *slash = '\0';
+    scan_courses(session, parent);
+  }
+  char installed[4096];
+  if (data_path(installed, sizeof(installed), "XDG_DATA_HOME", ".local/share",
+                "courses", &ignored) == 0) scan_courses(session, installed);
+  for (size_t index = 0U; index < session->course_count; index++)
+    if (strcmp(session->course_roots[index], session->course->root) == 0)
+      session->active_course = index;
+}
+
+static void free_course_list(ui_session *session) {
+  for (size_t index = 0U; index < session->course_count; index++) {
+    free(session->course_roots[index]);
+    free(session->course_titles[index]);
+  }
+  free(session->course_roots);
+  free(session->course_titles);
 }
 
 static int capture_bat(const char *path, char **output) {
@@ -333,12 +427,16 @@ static void draw_popup(ui_session *session, int rows, int columns) {
       "Esc / q       close / quit";
     draw_text(popup, help, 0U, PAIR_TEXT);
   } else if (session->popup == POPUP_COURSES) {
-    wattrset(popup, COLOR_PAIR(PAIR_SELECTED));
-    (void)mvwprintw(popup, 2, 2, "%-*s", width - 4, session->course->title);
+    for (size_t index = session->popup_scroll; index < session->course_count; index++) {
+      int row = 2 + (int)(index - session->popup_scroll);
+      if (row >= height - 3) break;
+      wattrset(popup, COLOR_PAIR(index == session->popup_cursor ? PAIR_SELECTED : PAIR_TEXT));
+      (void)mvwprintw(popup, row, 2, "%s %-*.*s",
+                      index == session->active_course ? "*" : " ", width - 6,
+                      width - 6, session->course_titles[index]);
+    }
     wattrset(popup, COLOR_PAIR(PAIR_MUTED));
-    (void)mvwprintw(popup, 4, 2, "License: %s", session->course->license_spdx);
-    (void)mvwaddnstr(popup, 6, 2, session->course->attribution, width - 4);
-    (void)mvwprintw(popup, 8, 2, "Install and validate more courses with the catalog CLI.");
+    (void)mvwprintw(popup, height - 2, 2, "Enter opens a course. Esc keeps the current course.");
   } else {
     int available = height - 4;
     size_t visible_index = 0U;
@@ -619,17 +717,43 @@ static void apply_action(ui_session *session, hol_action action, hol_error *erro
     if (action == HOL_ACTION_DOWN && session->popup == POPUP_LESSONS &&
         session->popup_cursor + 1U < session->course->lesson_count)
       session->popup_cursor++;
+    if (action == HOL_ACTION_DOWN && session->popup == POPUP_COURSES &&
+        session->popup_cursor + 1U < session->course_count)
+      session->popup_cursor++;
     if (action == HOL_ACTION_UP && session->popup == POPUP_LESSONS && session->popup_cursor > 0U)
       session->popup_cursor--;
+    if (action == HOL_ACTION_UP && session->popup == POPUP_COURSES &&
+        session->popup_cursor > 0U) session->popup_cursor--;
     if (action == HOL_ACTION_TOP) session->popup_cursor = 0U;
     if (action == HOL_ACTION_BOTTOM && session->popup == POPUP_LESSONS)
       session->popup_cursor = session->course->lesson_count - 1U;
-    if (action == HOL_ACTION_HALF_DOWN && session->popup_cursor + 8U < session->course->lesson_count)
+    if (action == HOL_ACTION_BOTTOM && session->popup == POPUP_COURSES &&
+        session->course_count > 0U) session->popup_cursor = session->course_count - 1U;
+    if (action == HOL_ACTION_HALF_DOWN && session->popup == POPUP_LESSONS &&
+        session->popup_cursor + 8U < session->course->lesson_count)
       session->popup_cursor += 8U;
-    if (action == HOL_ACTION_HALF_UP)
+    if (action == HOL_ACTION_HALF_DOWN && session->popup == POPUP_COURSES &&
+        session->popup_cursor + 8U < session->course_count)
+      session->popup_cursor += 8U;
+    if (action == HOL_ACTION_HALF_UP &&
+        (session->popup == POPUP_LESSONS || session->popup == POPUP_COURSES))
       session->popup_cursor = session->popup_cursor > 8U ? session->popup_cursor - 8U : 0U;
     if (action == HOL_ACTION_SELECT && session->popup == POPUP_LESSONS) {
       if (load_lesson(session, session->popup_cursor, error) < 0) set_output(session, error->message);
+      session->popup = POPUP_NONE;
+    }
+    if (action == HOL_ACTION_SELECT && session->popup == POPUP_COURSES &&
+        session->popup_cursor < session->course_count &&
+        session->popup_cursor != session->active_course) {
+      hol_course *next = NULL;
+      if (hol_course_load(session->course_roots[session->popup_cursor], &next, error) < 0) {
+        set_output(session, error->message);
+      } else {
+        hol_course_free(session->course);
+        session->course = next;
+        session->active_course = session->popup_cursor;
+        if (load_lesson(session, 0U, error) < 0) set_output(session, error->message);
+      }
       session->popup = POPUP_NONE;
     }
     return;
@@ -665,7 +789,10 @@ static void apply_action(ui_session *session, hol_action action, hol_error *erro
       session->popup = POPUP_LESSONS;
       session->popup_cursor = session->lesson_index;
       break;
-    case HOL_ACTION_COURSE_PICKER: session->popup = POPUP_COURSES; break;
+    case HOL_ACTION_COURSE_PICKER:
+      session->popup = POPUP_COURSES;
+      session->popup_cursor = session->active_course;
+      break;
     case HOL_ACTION_HELP: session->popup = POPUP_HELP; break;
     case HOL_ACTION_RUN: run_lesson(session, HOL_RUN, error); break;
     case HOL_ACTION_CHECK: run_lesson(session, HOL_CHECK, error); break;
@@ -691,6 +818,7 @@ int hol_ui_run(const char *course_root, hol_error *error) {
   ui_session session = {0};
   hol_keys_init(&session.keys);
   if (hol_course_load(course_root, &session.course, error) < 0) return -1;
+  discover_courses(&session);
   if (data_path(session.state_path, sizeof(session.state_path), "XDG_STATE_HOME",
                 ".local/state", "state.json", error) < 0 ||
       hol_state_load(session.state_path, &session.state, error) < 0) {
@@ -812,6 +940,7 @@ int hol_ui_run(const char *course_root, hol_error *error) {
   free(session.quiz_correct);
   hol_state_free(&session.state);
   hol_course_free(session.course);
+  free_course_list(&session);
   return 0;
 
 failure:
@@ -821,5 +950,6 @@ failure:
   free(session.quiz_correct);
   hol_state_free(&session.state);
   hol_course_free(session.course);
+  free_course_list(&session);
   return -1;
 }
