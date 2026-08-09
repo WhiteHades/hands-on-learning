@@ -3,11 +3,11 @@ PKG_CONFIG ?= pkg-config
 PREFIX ?= /usr/local
 
 CPPFLAGS := -D_POSIX_C_SOURCE=200809L -Iinclude \
-	$(shell $(PKG_CONFIG) --cflags ncursesw json-c libcurl)
+	$(shell $(PKG_CONFIG) --cflags ncursesw json-c libcurl libxml-2.0 libarchive)
 CFLAGS := -std=c23 -O2 -g -Wall -Wextra -Wpedantic -Werror \
 	-Wconversion -Wshadow -Wformat=2 -Wstrict-prototypes \
 	-Wmissing-prototypes -fstack-protector-strong -D_FORTIFY_SOURCE=3
-LDLIBS := $(shell $(PKG_CONFIG) --libs ncursesw json-c libcurl) -lm
+LDLIBS := $(shell $(PKG_CONFIG) --libs ncursesw json-c libcurl libxml-2.0 libarchive) -lm
 
 ifeq ($(SANITIZE),1)
 CFLAGS := $(filter-out -O2,$(CFLAGS)) -O1 -fno-omit-frame-pointer \

@@ -114,6 +114,8 @@ typedef struct {
   char license_file[HOL_PATH_MAX + 1];
   char attribution[1025];
   char root[4096];
+  char source_path[4096];
+  bool owns_root;
   hol_chapter *chapters;
   size_t chapter_count;
   size_t lesson_count;
