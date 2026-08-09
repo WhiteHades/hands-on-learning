@@ -15,7 +15,7 @@ static void usage(FILE *stream) {
     "  hands-on-learning catalog install ID [CATALOG] [DESTINATION]\n"
     "  hands-on-learning --version\n\n"
     "The default course is the bundled original demo. Set HOL_COURSE to use\n"
-    "another installed .holcourse directory.\n",
+    "another installed IMS Common Cartridge (.imscc) file.\n",
     HOL_APP_NAME, HOL_APP_VERSION);
 }
 
@@ -41,9 +41,9 @@ static int default_install_destination(char output[4096]) {
 static const char *default_course(void) {
   const char *configured = getenv("HOL_COURSE");
   if (configured != NULL && configured[0] != '\0') return configured;
-  if (access("courses/demo.holcourse/course.json", R_OK) == 0)
-    return "courses/demo.holcourse";
-  return "/usr/local/share/hands-on-learning/courses/demo.holcourse";
+  if (access("build/hol.demo-c-1.0.0.imscc", R_OK) == 0)
+    return "build/hol.demo-c-1.0.0.imscc";
+  return "/usr/local/share/hands-on-learning/courses/hol.demo-c-1.0.0.imscc";
 }
 
 int main(int argc, char **argv) {

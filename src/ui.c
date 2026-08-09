@@ -126,13 +126,13 @@ static int add_course(ui_session *session, const char *root, hol_error *error) {
   hol_course *course = NULL;
   if (hol_course_load(root, &course, error) < 0) return -1;
   for (size_t index = 0U; index < session->course_count; index++) {
-    if (strcmp(session->course_roots[index], course->root) == 0) {
+    if (strcmp(session->course_roots[index], course->source_path) == 0) {
       hol_course_free(course);
       return 0;
     }
   }
   size_t count = session->course_count + 1U;
-  char *new_root = strdup(course->root);
+  char *new_root = strdup(course->source_path);
   char *new_title = strdup(course->title);
   if (new_root == NULL || new_title == NULL) {
     free(new_root);
@@ -168,7 +168,7 @@ static void scan_courses(ui_session *session, const char *directory) {
   if (entries == NULL) return;
   struct dirent *entry;
   while ((entry = readdir(entries)) != NULL) {
-    if (!ends_with_text(entry->d_name, ".holcourse")) continue;
+    if (!ends_with_text(entry->d_name, ".imscc")) continue;
     char path[4096];
     int length = snprintf(path, sizeof(path), "%s/%s", directory, entry->d_name);
     if (length < 0 || (size_t)length >= sizeof(path)) continue;
@@ -180,9 +180,9 @@ static void scan_courses(ui_session *session, const char *directory) {
 
 static void discover_courses(ui_session *session) {
   hol_error ignored = {0};
-  (void)add_course(session, session->course->root, &ignored);
+  (void)add_course(session, session->course->source_path, &ignored);
   char parent[4096];
-  (void)snprintf(parent, sizeof(parent), "%s", session->course->root);
+  (void)snprintf(parent, sizeof(parent), "%s", session->course->source_path);
   char *slash = strrchr(parent, '/');
   if (slash != NULL) {
     *slash = '\0';
@@ -192,7 +192,7 @@ static void discover_courses(ui_session *session) {
   if (data_path(installed, sizeof(installed), "XDG_DATA_HOME", ".local/share",
                 "courses", &ignored) == 0) scan_courses(session, installed);
   for (size_t index = 0U; index < session->course_count; index++)
-    if (strcmp(session->course_roots[index], session->course->root) == 0)
+    if (strcmp(session->course_roots[index], session->course->source_path) == 0)
       session->active_course = index;
 }
 
