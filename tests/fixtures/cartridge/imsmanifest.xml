@@ -2,17 +2,17 @@
 <manifest xmlns="http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:lomm="http://ltsc.ieee.org/xsd/imsccv1p3/LOM/manifest"
-  identifier="manifest-hol-demo-c"
+  identifier="manifest-test-course"
   xsi:schemaLocation="http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1 http://www.imsglobal.org/profile/cc/ccv1p3/ccv1p3_imscp_v1p2_v1p0.xsd">
   <metadata>
     <schema>IMS Common Cartridge</schema>
     <schemaversion>1.3.0</schemaversion>
     <lomm:lom>
       <lomm:general>
-        <lomm:identifier><lomm:catalog>URI</lomm:catalog><lomm:entry>hol.demo-c</lomm:entry></lomm:identifier>
-        <lomm:title><lomm:string language="en">C in Three Small Steps</lomm:string></lomm:title>
+        <lomm:identifier><lomm:catalog>URI</lomm:catalog><lomm:entry>test.course</lomm:entry></lomm:identifier>
+        <lomm:title><lomm:string language="en">Test Course</lomm:string></lomm:title>
         <lomm:language>en</lomm:language>
-        <lomm:description><lomm:string language="en">A small portable course about C source files and headers.</lomm:string></lomm:description>
+        <lomm:description><lomm:string language="en">A private fixture for reader tests.</lomm:string></lomm:description>
       </lomm:general>
       <lomm:lifeCycle>
         <lomm:version><lomm:string language="en">1.0.0</lomm:string></lomm:version>
@@ -21,35 +21,28 @@
       <lomm:rights>
         <lomm:copyrightAndOtherRestrictions><lomm:source>LOMv1.0</lomm:source><lomm:value>yes</lomm:value></lomm:copyrightAndOtherRestrictions>
         <lomm:description><lomm:string language="en">SPDX-License-Identifier: MIT
-Copyright 2026 Hands-on Learning Contributors</lomm:string></lomm:description>
+Copyright 2026 Test Contributors</lomm:string></lomm:description>
       </lomm:rights>
     </lomm:lom>
   </metadata>
   <organizations>
     <organization identifier="organization" structure="rooted-hierarchy">
-      <title>C in Three Small Steps</title>
+      <title>Test Course</title>
       <item identifier="root">
         <item identifier="start">
           <title>Start Here</title>
-          <item identifier="welcome" identifierref="resource-welcome"><title>Welcome</title></item>
-          <item identifier="print-greeting" identifierref="resource-greeting"><title>Print a Greeting</title></item>
-        </item>
-        <item identifier="review">
-          <title>Review</title>
-          <item identifier="header-quiz" identifierref="resource-header-quiz"><title>Header Check</title></item>
+          <item identifier="intro" identifierref="resource-intro"><title>Introduction</title></item>
+          <item identifier="knowledge-check" identifierref="resource-knowledge-check"><title>Knowledge Check</title></item>
         </item>
       </item>
     </organization>
   </organizations>
   <resources>
-    <resource identifier="resource-welcome" type="webcontent" href="web/welcome.html">
-      <file href="web/welcome.html"/>
+    <resource identifier="resource-intro" type="webcontent" href="web/lesson.html">
+      <file href="web/lesson.html"/>
     </resource>
-    <resource identifier="resource-greeting" type="webcontent" href="web/greeting.html">
-      <file href="web/greeting.html"/>
-    </resource>
-    <resource identifier="resource-header-quiz" type="imsqti_xmlv1p2/imscc_xmlv1p3/assessment">
-      <file href="assessments/header.xml"/>
+    <resource identifier="resource-knowledge-check" type="imsqti_xmlv1p2/imscc_xmlv1p3/assessment">
+      <file href="assessments/quiz.xml"/>
     </resource>
     <resource identifier="resource-license" type="webcontent" href="LICENSE">
       <file href="LICENSE"/>
