@@ -6,7 +6,7 @@ Hands-on Learning is written in C23. It uses Vim keybindings and opens your real
 
 ## Get started
 
-Install GCC, ncursesw, json-c, libcurl, `bat`, and Neovim. Then run:
+Install GCC, ncursesw, json-c, libcurl, SQLite, `bat`, and Neovim. Then run:
 
 ```bash
 make check
@@ -37,7 +37,7 @@ build/hands-on-learning catalog list
 Install a course:
 
 ```bash
-build/hands-on-learning catalog install hol.demo-c
+build/hands-on-learning catalog install bootdev.learn-sql
 ```
 
 Open any local course bundle:

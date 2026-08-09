@@ -51,6 +51,8 @@ install: $(APP)
 	install -Dm755 $(APP) $(DESTDIR)$(PREFIX)/bin/hands-on-learning
 	install -d $(DESTDIR)$(PREFIX)/share/hands-on-learning/courses
 	cp -R courses/demo.holcourse $(DESTDIR)$(PREFIX)/share/hands-on-learning/courses/
+	install -Dm644 courses/catalog.json \
+		$(DESTDIR)$(PREFIX)/share/hands-on-learning/courses/catalog.json
 
 clean:
 	rm -rf build
