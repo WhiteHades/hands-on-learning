@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 static void write_source(const char *workspace, const char *source) {
@@ -17,6 +18,12 @@ static void write_named(const char *workspace, const char *name, const char *sou
   hol_error error = {0};
   assert(hol_join_path(path, sizeof(path), workspace, name, &error) == 0);
   assert(hol_atomic_write(path, source, strlen(source), &error) == 0);
+}
+
+static int64_t monotonic_ms(void) {
+  struct timespec now;
+  assert(clock_gettime(CLOCK_MONOTONIC, &now) == 0);
+  return (int64_t)now.tv_sec * 1000 + (int64_t)now.tv_nsec / 1000000;
 }
 
 int main(void) {
@@ -49,6 +56,22 @@ int main(void) {
   assert(result.passed);
   assert(strcmp(result.stdout_data, "Hello, learner!") == 0);
   hol_run_result_free(&result);
+
+  write_source(workspace,
+               "#include <signal.h>\n#include <unistd.h>\n"
+               "int main(void) { if (fork() == 0) { signal(SIGTERM, SIG_IGN); "
+               "for (;;) pause(); } return 0; }\n");
+  int64_t started = monotonic_ms();
+  assert(hol_runner_execute(&course, &lesson, workspace, HOL_RUN, &result, &error) == 0);
+  assert(monotonic_ms() - started < 2000);
+  hol_run_result_free(&result);
+
+  (void)strcpy(file.target, "-main.c");
+  write_named(workspace, "-main.c", "int main(void) { return 0; }\n");
+  assert(hol_runner_execute(&course, &lesson, workspace, HOL_RUN, &result, &error) == 0);
+  assert(result.passed);
+  hol_run_result_free(&result);
+  (void)strcpy(file.target, "main.c");
 
   write_source(workspace,
                "#include <stdio.h>\nint main(void) { puts(\"Wrong\"); }\n");
@@ -97,6 +120,18 @@ int main(void) {
                             &result, &error) == 0);
   assert(result.passed && strstr(result.stdout_data, "total") != NULL);
   hol_run_result_free(&result);
+
+  const size_t maximum_sql = 16U * HOL_OUTPUT_MAX;
+  char *large_sql = malloc(maximum_sql - 1U);
+  assert(large_sql != NULL);
+  memset(large_sql, ' ', maximum_sql - 2U);
+  large_sql[maximum_sql - 2U] = '\0';
+  write_named(workspace, "001_up.sql", large_sql);
+  write_named(workspace, "002_main.sql", "x");
+  free(large_sql);
+  sql_lesson.file_count = 2U;
+  assert(hol_runner_execute(&course, &sql_lesson, workspace, HOL_RUN,
+                            &result, &error) == -1);
 
   char command[8192];
   (void)snprintf(command, sizeof(command), "rm -rf -- '%s'", workspace);

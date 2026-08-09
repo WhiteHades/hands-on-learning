@@ -86,14 +86,24 @@ static void capture_read(int descriptor, capture_buffer *buffer, pid_t process) 
 static int execute_process(char *const arguments[], const char *working_directory,
                            const char *input_path, bool submit, hol_run_result *result,
                            hol_error *error) {
-  int standard_output[2];
-  int standard_error[2];
-  if (pipe(standard_output) < 0 || pipe(standard_error) < 0) {
+  int standard_output[2] = {-1, -1};
+  int standard_error[2] = {-1, -1};
+  if (pipe(standard_output) < 0) {
+    hol_error_set(error, HOL_ERR_PROCESS, "cannot create process pipes");
+    return -1;
+  }
+  if (pipe(standard_error) < 0) {
+    (void)close(standard_output[0]);
+    (void)close(standard_output[1]);
     hol_error_set(error, HOL_ERR_PROCESS, "cannot create process pipes");
     return -1;
   }
   pid_t process = fork();
   if (process < 0) {
+    (void)close(standard_output[0]);
+    (void)close(standard_output[1]);
+    (void)close(standard_error[0]);
+    (void)close(standard_error[1]);
     hol_error_set(error, HOL_ERR_PROCESS, "cannot fork child process");
     return -1;
   }
@@ -122,6 +132,8 @@ static int execute_process(char *const arguments[], const char *working_director
       set_nonblocking(standard_error[0]) < 0) {
     (void)kill(-process, SIGKILL);
     (void)waitpid(process, NULL, 0);
+    (void)close(standard_output[0]);
+    (void)close(standard_error[0]);
     hol_error_set(error, HOL_ERR_PROCESS, "cannot configure process pipes");
     return -1;
   }
@@ -150,21 +162,42 @@ static int execute_process(char *const arguments[], const char *working_director
     capture_read(standard_error[0], &errors, process);
     if (!exited) {
       pid_t waited = waitpid(process, &status, WNOHANG);
-      if (waited == process) exited = true;
+      if (waited == process) {
+        exited = true;
+        if ((!output.closed || !errors.closed) && !terminated) {
+          terminated = true;
+          terminated_at = monotonic_ms();
+          (void)kill(-process, SIGTERM);
+        }
+      }
     }
     int64_t elapsed = monotonic_ms() - started;
-    if (!exited && !terminated && elapsed >= effective_timeout_ms()) {
+    if (!terminated && elapsed >= effective_timeout_ms()) {
       result->timed_out = true;
       terminated = true;
       terminated_at = monotonic_ms();
       (void)kill(-process, SIGTERM);
     }
-    if (!exited && terminated && monotonic_ms() - terminated_at >= 250) {
+    int64_t termination_elapsed = monotonic_ms() - terminated_at;
+    if (terminated && termination_elapsed >= 250) {
       (void)kill(-process, SIGKILL);
+      if (!exited) (void)kill(process, SIGKILL);
+    }
+    if (terminated && termination_elapsed >= 500) {
+      if (!output.closed) {
+        (void)close(standard_output[0]);
+        standard_output[0] = -1;
+        output.closed = true;
+      }
+      if (!errors.closed) {
+        (void)close(standard_error[0]);
+        standard_error[0] = -1;
+        errors.closed = true;
+      }
     }
   }
-  (void)close(standard_output[0]);
-  (void)close(standard_error[0]);
+  if (standard_output[0] >= 0) (void)close(standard_output[0]);
+  if (standard_error[0] >= 0) (void)close(standard_error[0]);
   result->stdout_data = output.data;
   result->stderr_data = errors.data;
   result->stdout_truncated = output.truncated;
@@ -205,7 +238,8 @@ static int run_sql(const hol_lesson *lesson, const char *workspace,
   for (size_t index = 0U; index < lesson->file_count; index++)
     if (ends_with(lesson->files[index].target, ".sql")) files[file_count++] = &lesson->files[index];
   qsort(files, file_count, sizeof(*files), compare_targets);
-  char *sql = calloc(16U * HOL_OUTPUT_MAX + 1U, 1U);
+  const size_t maximum_sql = 16U * HOL_OUTPUT_MAX;
+  char *sql = calloc(maximum_sql + 1U, 1U);
   if (sql == NULL) {
     free(files);
     return -1;
@@ -220,10 +254,16 @@ static int run_sql(const hol_lesson *lesson, const char *workspace,
       free(files);
       return -1;
     }
+    if (length >= maximum_sql) {
+      hol_error_set(error, HOL_ERR_SCHEMA, "SQL lesson input is too large");
+      free(sql);
+      free(files);
+      return -1;
+    }
+    size_t available = maximum_sql - length - 1U;
     size_t file_length = 0U;
-    char *content = hol_read_text(path, 16U * HOL_OUTPUT_MAX - length,
-                                  &file_length, error);
-    if (content == NULL || file_length > 16U * HOL_OUTPUT_MAX - length - 2U) {
+    char *content = hol_read_text(path, available, &file_length, error);
+    if (content == NULL || file_length > available) {
       free(content);
       free(sql);
       free(files);
@@ -278,8 +318,14 @@ int hol_runner_execute(const hol_course *course, const hol_lesson *lesson,
 
   size_t capacity = lesson->file_count + 16U;
   char **compiler = calloc(capacity, sizeof(*compiler));
-  if (compiler == NULL) return -1;
+  char **source_paths = calloc(lesson->file_count, sizeof(*source_paths));
+  if (compiler == NULL || source_paths == NULL) {
+    free(compiler);
+    free(source_paths);
+    return -1;
+  }
   size_t count = 0U;
+  size_t source_count = 0U;
   compiler[count++] = "gcc";
   compiler[count++] = "-O0";
   compiler[count++] = "-g";
@@ -288,10 +334,26 @@ int hol_runner_execute(const hol_course *course, const hol_lesson *lesson,
   if (strcmp(lesson->runner.profile, "c11-32") == 0) compiler[count++] = "-m32";
   compiler[count++] = strcmp(lesson->runner.profile, "c23") == 0 ? "-std=c23" : "-std=c11";
   for (size_t index = 0U; index < lesson->file_count; index++) {
-    if (ends_with(lesson->files[index].target, ".c"))
-      compiler[count++] = lesson->files[index].target;
+    if (ends_with(lesson->files[index].target, ".c")) {
+      size_t length = strlen(lesson->files[index].target);
+      source_paths[index] = malloc(length + 3U);
+      if (source_paths[index] == NULL) {
+        for (size_t previous = 0U; previous < index; previous++)
+          free(source_paths[previous]);
+        free(source_paths);
+        free(compiler);
+        return -1;
+      }
+      (void)snprintf(source_paths[index], length + 3U, "./%s",
+                     lesson->files[index].target);
+      compiler[count++] = source_paths[index];
+      source_count++;
+    }
   }
-  if (count <= 6U) {
+  if (source_count == 0U) {
+    for (size_t index = 0U; index < lesson->file_count; index++)
+      free(source_paths[index]);
+    free(source_paths);
     free(compiler);
     hol_error_set(error, HOL_ERR_SCHEMA, "C lesson has no source files");
     return -1;
@@ -309,6 +371,9 @@ int hol_runner_execute(const hol_course *course, const hol_lesson *lesson,
 
   hol_run_result compilation = {0};
   int status = execute_process(compiler, workspace, NULL, false, &compilation, error);
+  for (size_t index = 0U; index < lesson->file_count; index++)
+    free(source_paths[index]);
+  free(source_paths);
   free(compiler);
   if (status < 0) return -1;
   if (compilation.exit_code != 0 || compilation.timed_out) {
