@@ -32,6 +32,8 @@ typedef struct {
   bool failed;
 } download_target;
 
+static const uint64_t maximum_bundle_bytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+
 static json_object *catalog_required(json_object *parent, const char *name,
                                      enum json_type type, hol_error *error) {
   json_object *value = NULL;
@@ -49,7 +51,10 @@ static int catalog_copy(char *target, size_t size, json_object *parent,
   if (value == NULL) return -1;
   const char *text = json_object_get_string(value);
   size_t length = strlen(text);
-  if (length >= size) return -1;
+  if ((size_t)json_object_get_string_len(value) != length || length >= size) {
+    hol_error_set(error, HOL_ERR_SCHEMA, "invalid catalog field: %s", name);
+    return -1;
+  }
   memcpy(target, text, length + 1U);
   return 0;
 }
@@ -84,6 +89,8 @@ static int parse_entry(json_object *object, catalog_entry *entry,
   int64_t lesson_count = json_object_get_int64(lessons);
   int64_t byte_count = json_object_get_int64(bytes);
   if (lesson_count < 1 || lesson_count > 10000 || byte_count < 1 ||
+      (uint64_t)byte_count > maximum_bundle_bytes || !hol_valid_id(entry->id) ||
+      !hol_version_supported(entry->minimum_app_version) ||
       !digest_string(entry->sha256) ||
       !(strncmp(entry->url, "https://", 8U) == 0 ||
         strncmp(entry->url, "file://", 7U) == 0)) return -1;
@@ -140,8 +147,12 @@ int hol_catalog_list(const char *catalog_path, FILE *stream, hol_error *error) {
 
 static size_t write_download(char *data, size_t size, size_t count, void *user_data) {
   download_target *target = user_data;
+  if (size != 0U && count > SIZE_MAX / size) {
+    target->failed = true;
+    return 0U;
+  }
   size_t length = size * count;
-  if (length > target->limit - target->written) {
+  if (target->written > target->limit || length > target->limit - target->written) {
     target->failed = true;
     return 0U;
   }
@@ -175,6 +186,8 @@ static int download_bundle(const catalog_entry *entry, const char *path,
   (void)curl_easy_setopt(curl, CURLOPT_URL, entry->url);
   (void)curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
   (void)curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR,
+                         strncmp(entry->url, "file://", 7U) == 0 ? "file" : "https");
+  (void)curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR,
                          strncmp(entry->url, "file://", 7U) == 0 ? "file" : "https");
   (void)curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 20L);
   (void)curl_easy_setopt(curl, CURLOPT_TIMEOUT, 1800L);
@@ -264,7 +277,7 @@ static int extract_tar(const char *archive, const char *staging, char top[256],
     uint64_t size = octal_value(header + 124U, 12U, &size_valid);
     if (!checksum_valid || !size_valid || checksum != stored_checksum ||
         ++entries > 100000U ||
-        size > 2U * 1024U * 1024U * 1024U - expanded) goto invalid;
+        size > maximum_bundle_bytes - expanded) goto invalid;
     expanded += size;
     char name[256];
     size_t name_length = strnlen((const char *)header, 100U);
@@ -352,9 +365,13 @@ int hol_catalog_install(const char *catalog_path, const char *course_id,
   (void)json_object_object_get_ex(catalog, "courses", &courses);
   catalog_entry selected = {0};
   bool found = false;
+  bool valid = true;
   for (size_t index = 0U; index < json_object_array_length(courses); index++) {
     catalog_entry entry = {0};
-    if (parse_entry(json_object_array_get_idx(courses, index), &entry, error) < 0) break;
+    if (parse_entry(json_object_array_get_idx(courses, index), &entry, error) < 0) {
+      valid = false;
+      break;
+    }
     if (strcmp(entry.id, course_id) == 0) {
       selected = entry;
       found = true;
@@ -362,12 +379,19 @@ int hol_catalog_install(const char *catalog_path, const char *course_id,
     }
   }
   json_object_put(catalog);
+  if (!valid) return -1;
   if (!found) {
     hol_error_set(error, HOL_ERR_ARGUMENT, "course is not in the catalog: %s", course_id);
     return -1;
   }
   if (ensure_directories(destination) < 0 ||
       (mkdir(destination, 0700) < 0 && errno != EEXIST)) return -1;
+  struct stat destination_status;
+  if (lstat(destination, &destination_status) < 0 ||
+      !S_ISDIR(destination_status.st_mode)) {
+    hol_error_set(error, HOL_ERR_PATH, "course destination is not a directory");
+    return -1;
+  }
   char archive[4096];
   char staging[4096];
   int written = snprintf(archive, sizeof(archive), "%s/.download.XXXXXX", destination);
@@ -390,9 +414,12 @@ int hol_catalog_install(const char *catalog_path, const char *course_id,
   hol_course *course = NULL;
   if (hol_course_load(extracted, &course, error) < 0) goto failure;
   bool matches = strcmp(course->id, selected.id) == 0 &&
-                 strcmp(course->version, selected.version) == 0 &&
-                 course->lesson_count == selected.lesson_count &&
-                 strcmp(course->license_spdx, selected.license_spdx) == 0;
+                  strcmp(course->version, selected.version) == 0 &&
+                  course->lesson_count == selected.lesson_count &&
+                  strcmp(course->license_spdx, selected.license_spdx) == 0 &&
+                  strcmp(course->attribution, selected.attribution) == 0 &&
+                  strcmp(course->minimum_app_version,
+                         selected.minimum_app_version) == 0;
   hol_course_free(course);
   if (!matches || access(final, F_OK) == 0 || rename(extracted, final) < 0) {
     hol_error_set(error, HOL_ERR_SCHEMA, "installed course does not match catalog metadata");

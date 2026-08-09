@@ -30,7 +30,7 @@ int main(void) {
     "{\"schema_version\":1,\"updated_at\":\"2026-08-09T00:00:00Z\",\"courses\":[{"
     "\"id\":\"hol.demo-c\",\"version\":\"1.0.0\",\"title\":\"C in Three Small Steps\","
     "\"description\":\"Demo\",\"minimum_app_version\":\"0.1.0\",\"lesson_count\":3,"
-    "\"license\":{\"spdx\":\"MIT\",\"attribution\":\"Hands-on Learning Contributors\"},"
+    "\"license\":{\"spdx\":\"MIT\",\"attribution\":\"Copyright 2026 Hands-on Learning Contributors\"},"
     "\"bundle\":{\"url\":\"file://%s\",\"bytes\":%lld,\"sha256\":\"%s\"}}]}\n",
     archive, (long long)status.st_size, digest);
   assert(length > 0 && (size_t)length < sizeof(manifest));
