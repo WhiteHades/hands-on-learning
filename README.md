@@ -6,7 +6,7 @@ Hands-on Learning is a C23 reader for 1EdTech Common Cartridge 1.3 packages. It 
 
 ## Get started
 
-Install GCC, ncursesw, json-c, libcurl, libxml2, libarchive, bsdtar, and zip. Then run:
+Install GCC, ncursesw, json-c, libcurl, libxml2, libarchive, and zip. Then run:
 
 ```bash
 make check
