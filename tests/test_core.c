@@ -99,6 +99,11 @@ int main(void) {
   assert(strcmp(loaded.lesson_id, "hello") == 0);
   assert(loaded.reader_scroll == 12U);
 
+  hol_course *demo = NULL;
+  assert(hol_course_load("courses/demo.holcourse", &demo, &error) == 0);
+  assert(demo != NULL && demo->lesson_count == 3U);
+  hol_course_free(demo);
+
   hol_course_free(course);
   char command[8192];
   (void)snprintf(command, sizeof(command), "rm -rf -- '%s'", root);
