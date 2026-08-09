@@ -15,8 +15,8 @@
       },
       "bundle": {
         "url": "https://github.com/WhiteHades/hands-on-learning/releases/download/v0.1.0/hol.demo-c-1.0.0.imscc",
-        "bytes": 3273,
-        "sha256": "64c231d4ff82915865908d5cb6c7c6f00e691f5fff4949ff9ccf3166a1a898e2"
+        "bytes": 3289,
+        "sha256": "7157d4a3fa736531e201b7bc547fe5edf4f4a7d6329cb30b2e10056ea2390e9a"
       }
     },
     {
@@ -32,8 +32,8 @@
       },
       "bundle": {
         "url": "https://github.com/WhiteHades/hands-on-learning/releases/download/v0.1.0/bootdev.memory-management-c-1.0.0.imscc",
-        "bytes": 460713091,
-        "sha256": "ea5a8a7346c660ed32b8de12becbd171f42bcdfeb304428fb8fa518c838e3f9d"
+        "bytes": 460387005,
+        "sha256": "891452aac47859e37054c8af007bbf96ce5b1b9d76218811ef3c98d263a446c8"
       }
     },
     {
@@ -49,8 +49,8 @@
       },
       "bundle": {
         "url": "https://github.com/WhiteHades/hands-on-learning/releases/download/v0.1.0/bootdev.learn-sql-1.0.0.imscc",
-        "bytes": 145790142,
-        "sha256": "ae276ccb6b23512a230951b721d83b7119e9b06d06d4814d1036e4f815d47c98"
+        "bytes": 145633331,
+        "sha256": "cb6fc3bcd4d44551e66ee9fd2405b8ceba809b96dc92b89fc1d12fd4b75f7859"
       }
     }
   ]

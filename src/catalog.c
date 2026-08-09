@@ -194,7 +194,9 @@ static int download_bundle(const catalog_entry *entry, const char *path,
   (void)curl_easy_setopt(curl, CURLOPT_WRITEDATA, &target);
   CURLcode result = curl_easy_perform(curl);
   curl_easy_cleanup(curl);
-  if (fsync(descriptor) < 0 || close(descriptor) < 0 || result != CURLE_OK ||
+  int sync_status = fsync(descriptor);
+  int close_status = close(descriptor);
+  if (sync_status < 0 || close_status < 0 || result != CURLE_OK ||
       target.failed || target.written != entry->bytes) goto failure;
   char actual[65];
   if (hol_sha256_file(path, actual, error) < 0 || strcmp(actual, entry->sha256) != 0) {
