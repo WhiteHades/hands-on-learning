@@ -18,20 +18,20 @@ int main(void) {
 
   hol_error error = {0};
   hol_course *course = NULL;
-  assert(hol_course_load("build/hol.demo-c-1.0.0.imscc", &course, &error) == 0);
+  assert(hol_course_load("build/test-course.imscc", &course, &error) == 0);
   assert(course != NULL);
-  assert(strcmp(course->id, "hol.demo-c") == 0);
+  assert(strcmp(course->id, "test.course") == 0);
   assert(strcmp(course->version, "1.0.0") == 0);
   assert(strcmp(course->license_spdx, "MIT") == 0);
-  assert(course->chapter_count == 2U);
-  assert(course->lesson_count == 3U);
+  assert(course->chapter_count == 1U);
+  assert(course->lesson_count == 2U);
   const hol_lesson *welcome = hol_course_lesson(course, 0U);
-  assert(welcome != NULL && strcmp(welcome->id, "welcome") == 0);
+  assert(welcome != NULL && strcmp(welcome->id, "intro") == 0);
   assert(welcome->kind == HOL_LESSON_READING);
-  const hol_lesson *quiz = hol_course_lesson(course, 2U);
+  const hol_lesson *quiz = hol_course_lesson(course, 1U);
   assert(quiz != NULL && quiz->kind == HOL_LESSON_QUIZ);
   assert(quiz->question_count == 1U && quiz->quiz_passing_score == 1U);
-  assert(strcmp(quiz->questions[0].answer, "b") == 0);
+  assert(strcmp(quiz->questions[0].answer, "a") == 0);
 
   char root[] = "/tmp/hol-state-XXXXXX";
   assert(mkdtemp(root) != NULL);
@@ -45,7 +45,7 @@ int main(void) {
   assert(hol_state_save(state_path, &state, &error) == 0);
   hol_state loaded = {0};
   assert(hol_state_load(state_path, &loaded, &error) == 0);
-  assert(strcmp(loaded.lesson_id, "header-quiz") == 0);
+  assert(strcmp(loaded.lesson_id, "knowledge-check") == 0);
   assert(loaded.reader_scroll == 12U);
   assert(hol_state_completed(&loaded, course->id, quiz->id));
   hol_state_free(&loaded);
@@ -54,7 +54,7 @@ int main(void) {
 
   hol_course *invalid = NULL;
   memset(&error, 0, sizeof(error));
-  assert(hol_course_load("courses/demo", &invalid, &error) == -1);
+  assert(hol_course_load("tests/fixtures/cartridge", &invalid, &error) == -1);
   assert(invalid == NULL && error.code == HOL_ERR_UNSUPPORTED);
   assert(unlink(state_path) == 0);
   assert(rmdir(root) == 0);

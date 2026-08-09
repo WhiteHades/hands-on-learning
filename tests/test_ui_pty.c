@@ -71,7 +71,7 @@ static pid_t launch_ui(int master, const char *slave_name, const char *home) {
   assert(setenv("XDG_DATA_HOME", data, 1) == 0);
   assert(setenv("XDG_STATE_HOME", state, 1) == 0);
   execl("build/hands-on-learning", "build/hands-on-learning", "--course",
-        "build/hol.demo-c-1.0.0.imscc", (char *)NULL);
+        "build/test-course.imscc", (char *)NULL);
   _exit(127);
 }
 
@@ -97,7 +97,7 @@ int main(void) {
   assert(kill(process, SIGWINCH) == 0);
   write_all(master, " lc");
   read_until(master, "COURSES");
-  write_all(master, "\033 ll/Header\r\r");
+  write_all(master, "\033 ll/Knowledge\r\r");
   struct timespec pause = {.tv_nsec = 200000000L};
   (void)nanosleep(&pause, NULL);
   write_all(master, "\033");
@@ -132,8 +132,8 @@ int main(void) {
   hol_error error = {0};
   char *state = hol_read_text(state_path, 64U * 1024U, NULL, &error);
   assert(state != NULL);
-  assert(strstr(state, "\"course_id\":\"hol.demo-c\"") != NULL);
-  assert(strstr(state, "\"lesson_id\":\"header-quiz\"") != NULL);
+  assert(strstr(state, "\"course_id\":\"test.course\"") != NULL);
+  assert(strstr(state, "\"lesson_id\":\"knowledge-check\"") != NULL);
   free(state);
   char command[8192];
   assert(snprintf(command, sizeof(command), "rm -rf -- '%s'", home) > 0);
