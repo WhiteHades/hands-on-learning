@@ -16,9 +16,10 @@ LDLIBS += -fsanitize=address,undefined
 endif
 
 APP := build/hands-on-learning
-DEMO_CARTRIDGE := build/hol.demo-c-1.0.0.imscc
-DEMO_STAGE := build/demo-cartridge
-DEMO_SOURCES := $(wildcard courses/demo/* courses/demo/web/* courses/demo/assessments/*)
+TEST_CARTRIDGE := build/test-course.imscc
+TEST_STAGE := build/test-cartridge
+TEST_CARTRIDGE_SOURCES := $(wildcard tests/fixtures/cartridge/* \
+	tests/fixtures/cartridge/web/* tests/fixtures/cartridge/assessments/*)
 SOURCES := $(wildcard src/*.c)
 CORE_SOURCES := $(filter-out src/main.c,$(SOURCES))
 OBJECTS := $(patsubst src/%.c,build/%.o,$(SOURCES))
@@ -27,7 +28,7 @@ TEST_BINS := $(patsubst tests/%.c,build/%,$(TEST_SOURCES))
 
 .PHONY: all clean test check sanitize install
 
-all: $(APP) $(DEMO_CARTRIDGE)
+all: $(APP)
 
 $(APP): $(OBJECTS)
 	$(CC) $(CFLAGS) $^ $(LDLIBS) -o $@
@@ -41,16 +42,16 @@ build/test_%: tests/test_%.c $(CORE_SOURCES) include/hol.h | build
 build:
 	mkdir -p $@
 
-$(DEMO_CARTRIDGE): $(DEMO_SOURCES) | build
-	rm -rf $(DEMO_STAGE) $@
-	mkdir -p $(DEMO_STAGE)
-	cp -R courses/demo/. $(DEMO_STAGE)/
-	find $(DEMO_STAGE) -type f -exec touch -t 202608090000 {} +
-	cd $(DEMO_STAGE) && find imsmanifest.xml LICENSE web assessments -type f \
+$(TEST_CARTRIDGE): $(TEST_CARTRIDGE_SOURCES) | build
+	rm -rf $(TEST_STAGE) $@
+	mkdir -p $(TEST_STAGE)
+	cp -R tests/fixtures/cartridge/. $(TEST_STAGE)/
+	find $(TEST_STAGE) -type f -exec touch -t 202608090000 {} +
+	cd $(TEST_STAGE) && find imsmanifest.xml LICENSE web assessments -type f \
 		-print | LC_ALL=C sort | zip -X -q $(abspath $@) -@
-	rm -rf $(DEMO_STAGE)
+	rm -rf $(TEST_STAGE)
 
-test: $(TEST_BINS) $(APP) $(DEMO_CARTRIDGE)
+test: $(TEST_BINS) $(APP) $(TEST_CARTRIDGE)
 	@set -e; for test_bin in $(TEST_BINS); do "$$test_bin"; done
 
 check: all test
@@ -59,11 +60,9 @@ sanitize:
 	$(MAKE) clean
 	$(MAKE) SANITIZE=1 check
 
-install: $(APP) $(DEMO_CARTRIDGE)
+install: $(APP)
 	install -Dm755 $(APP) $(DESTDIR)$(PREFIX)/bin/hands-on-learning
 	install -d $(DESTDIR)$(PREFIX)/share/hands-on-learning/courses
-	install -Dm644 $(DEMO_CARTRIDGE) \
-		$(DESTDIR)$(PREFIX)/share/hands-on-learning/courses/hol.demo-c-1.0.0.imscc
 	install -Dm644 courses/catalog.json \
 		$(DESTDIR)$(PREFIX)/share/hands-on-learning/courses/catalog.json
 
