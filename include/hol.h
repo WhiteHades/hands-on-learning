@@ -242,8 +242,13 @@ int hol_launch_editor(const char *path, hol_error *error);
 int hol_launch_media(const char *path, hol_error *error);
 
 int hol_catalog_list(const char *catalog_path, FILE *stream, hol_error *error);
+int hol_catalog_select(const char *catalog_path, FILE *input, FILE *output,
+                       char course_id[HOL_ID_MAX + 1], hol_error *error);
 int hol_catalog_install(const char *catalog_path, const char *course_id,
                         const char *destination, hol_error *error);
+int hol_catalog_install_path(const char *catalog_path, const char *course_id,
+                             const char *destination, char *course_path,
+                             size_t course_path_size, hol_error *error);
 
 int hol_ui_run(const char *course_root, hol_error *error);
 

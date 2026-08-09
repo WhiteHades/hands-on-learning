@@ -147,6 +147,58 @@ int hol_catalog_list(const char *catalog_path, FILE *stream, hol_error *error) {
   return 0;
 }
 
+int hol_catalog_select(const char *catalog_path, FILE *input, FILE *output,
+                       char course_id[HOL_ID_MAX + 1], hol_error *error) {
+  json_object *catalog = NULL;
+  if (load_catalog(catalog_path, &catalog, error) < 0) return -1;
+  json_object *courses = NULL;
+  (void)json_object_object_get_ex(catalog, "courses", &courses);
+  size_t count = json_object_array_length(courses);
+  if (count == 0U) {
+    json_object_put(catalog);
+    hol_error_set(error, HOL_ERR_SCHEMA, "the course catalog is empty");
+    return -1;
+  }
+  (void)fprintf(output, "Choose a course:\n\n");
+  for (size_t index = 0U; index < count; index++) {
+    catalog_entry entry = {0};
+    if (parse_entry(json_object_array_get_idx(courses, index), &entry, error) < 0) {
+      json_object_put(catalog);
+      return -1;
+    }
+    (void)fprintf(output, "  %zu. %s\n     %s\n", index + 1U, entry.title,
+                  entry.description);
+  }
+  (void)fprintf(output, "\nEnter 1 to %zu: ", count);
+  (void)fflush(output);
+  char response[32];
+  if (fgets(response, sizeof(response), input) == NULL) {
+    json_object_put(catalog);
+    hol_error_set(error, HOL_ERR_ARGUMENT, "no course was selected");
+    return -1;
+  }
+  char *end = NULL;
+  errno = 0;
+  unsigned long selection = strtoul(response, &end, 10);
+  while (end != NULL && (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n'))
+    end++;
+  if (errno != 0 || end == response || end == NULL || *end != '\0' ||
+      selection < 1UL || selection > count) {
+    json_object_put(catalog);
+    hol_error_set(error, HOL_ERR_ARGUMENT, "invalid course selection");
+    return -1;
+  }
+  catalog_entry selected = {0};
+  if (parse_entry(json_object_array_get_idx(courses, selection - 1UL),
+                  &selected, error) < 0) {
+    json_object_put(catalog);
+    return -1;
+  }
+  (void)snprintf(course_id, HOL_ID_MAX + 1U, "%s", selected.id);
+  json_object_put(catalog);
+  return 0;
+}
+
 static size_t write_download(char *data, size_t size, size_t count, void *user_data) {
   download_target *target = user_data;
   if (size != 0U && count > SIZE_MAX / size) {
@@ -225,8 +277,9 @@ static int ensure_directories(const char *path) {
   return 0;
 }
 
-int hol_catalog_install(const char *catalog_path, const char *course_id,
-                        const char *destination, hol_error *error) {
+int hol_catalog_install_path(const char *catalog_path, const char *course_id,
+                             const char *destination, char *course_path,
+                             size_t course_path_size, hol_error *error) {
   json_object *catalog = NULL;
   if (load_catalog(catalog_path, &catalog, error) < 0) return -1;
   json_object *courses = NULL;
@@ -254,10 +307,18 @@ int hol_catalog_install(const char *catalog_path, const char *course_id,
       (mkdir(destination, 0700) < 0 && errno != EEXIST)) return -1;
   struct stat status;
   if (lstat(destination, &status) < 0 || !S_ISDIR(status.st_mode)) return -1;
-  char temporary[4096];
   char final[4096];
-  int length = snprintf(temporary, sizeof(temporary), "%s/.download.XXXXXX.imscc",
-                        destination);
+  int length = snprintf(final, sizeof(final), "%s/%s-%s.imscc", destination,
+                        selected.id, selected.version);
+  if (length < 0 || (size_t)length >= sizeof(final) ||
+      (course_path != NULL && (size_t)length >= course_path_size)) return -1;
+  if (access(final, R_OK) == 0) {
+    if (course_path != NULL) (void)snprintf(course_path, course_path_size, "%s", final);
+    return 0;
+  }
+  char temporary[4096];
+  length = snprintf(temporary, sizeof(temporary), "%s/.download.XXXXXX.imscc",
+                    destination);
   if (length < 0 || (size_t)length >= sizeof(temporary)) return -1;
   int placeholder = mkstemps(temporary, 6);
   if (placeholder < 0) return -1;
@@ -273,16 +334,20 @@ int hol_catalog_install(const char *catalog_path, const char *course_id,
                  strcmp(course->license_spdx, selected.license_spdx) == 0 &&
                  strcmp(course->attribution, selected.attribution) == 0;
   hol_course_free(course);
-  length = snprintf(final, sizeof(final), "%s/%s-%s.imscc", destination,
-                    selected.id, selected.version);
-  if (!matches || length < 0 || (size_t)length >= sizeof(final) ||
-      access(final, F_OK) == 0 || rename(temporary, final) < 0) {
+  if (!matches || rename(temporary, final) < 0) {
     hol_error_set(error, HOL_ERR_SCHEMA, "installed cartridge does not match catalog metadata");
     goto failure;
   }
+  if (course_path != NULL) (void)snprintf(course_path, course_path_size, "%s", final);
   return 0;
 
 failure:
   (void)unlink(temporary);
   return -1;
+}
+
+int hol_catalog_install(const char *catalog_path, const char *course_id,
+                        const char *destination, hol_error *error) {
+  return hol_catalog_install_path(catalog_path, course_id, destination, NULL, 0U,
+                                  error);
 }
