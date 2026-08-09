@@ -38,7 +38,7 @@ build/test_%: tests/test_%.c $(CORE_SOURCES) include/hol.h | build
 build:
 	mkdir -p $@
 
-test: $(TEST_BINS)
+test: $(TEST_BINS) $(APP)
 	@set -e; for test_bin in $(TEST_BINS); do "$$test_bin"; done
 
 check: all test
