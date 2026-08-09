@@ -80,13 +80,3 @@ The loader rejects bad digests, missing files, undeclared files, unsafe paths, l
 Imported courses identify Boot.dev as their source. Their manifests, catalog entries, and course views show the required Boot.dev attribution.
 
 The included demo is original Hands-on Learning content. It does not contain Boot.dev lessons or media.
-
-## Local files
-
-The application stores progress and workspaces in your XDG data directories. It never overwrites an existing learner file during a course refresh.
-
-Raw source archives, credentials, account data, and private permission records are not part of this repository.
-
-## License
-
-The application and original demo use the MIT License. Each installed course declares its own license and attribution.
