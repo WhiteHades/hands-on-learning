@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "id": "hol.demo-c",
+  "version": "1.0.0",
+  "minimum_app_version": "0.1.0",
+  "title": "C in Three Small Steps",
+  "description": "A tiny original course for trying the complete local learning workflow.",
+  "authors": [
+    "Hands-on Learning Contributors"
+  ],
+  "language": "en",
+  "tags": [
+    "c",
+    "beginner",
+    "demo"
+  ],
+  "license": {
+    "spdx": "MIT",
+    "file": "LICENSE",
+    "attribution": "Copyright 2026 Hands-on Learning Contributors"
+  },
+  "chapters": [
+    {
+      "id": "start",
+      "title": "Start Here",
+      "lessons": [
+        {
+          "id": "welcome",
+          "title": "Welcome",
+          "kind": "reading",
+          "content": "lessons/welcome.md",
+          "workspace": null,
+          "runner": null,
+          "quiz": null,
+          "media": [
+            "media/program-flow.svg"
+          ]
+        },
+        {
+          "id": "print-greeting",
+          "title": "Print a Greeting",
+          "kind": "exercise",
+          "content": "lessons/greeting.md",
+          "workspace": {
+            "default_file": "main.c",
+            "files": [
+              {
+                "source": "files/main.c",
+                "target": "main.c",
+                "role": "editable",
+                "syntax": "c"
+              }
+            ]
+          },
+          "runner": {
+            "id": "c",
+            "profile": "c11",
+            "check": {
+              "kind": "stdout",
+              "expected": "Hello, learner!\n"
+            }
+          },
+          "quiz": null,
+          "media": []
+        }
+      ]
+    },
+    {
+      "id": "review",
+      "title": "Review",
+      "lessons": [
+        {
+          "id": "header-quiz",
+          "title": "Header Check",
+          "kind": "quiz",
+          "content": "lessons/quiz.md",
+          "workspace": null,
+          "runner": null,
+          "quiz": {
+            "passing_score": 1,
+            "questions": [
+              {
+                "id": "printf-header",
+                "prompt": "Which header declares printf?",
+                "choices": [
+                  {
+                    "id": "a",
+                    "text": "math.h"
+                  },
+                  {
+                    "id": "b",
+                    "text": "stdio.h"
+                  },
+                  {
+                    "id": "c",
+                    "text": "string.h"
+                  }
+                ],
+                "answer": "b",
+                "explanation": "The standard input/output declarations are provided by stdio.h."
+              }
+            ]
+          },
+          "media": []
+        }
+      ]
+    }
+  ]
+}
