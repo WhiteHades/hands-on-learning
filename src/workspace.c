@@ -19,13 +19,25 @@ int hol_workspace_ensure(const hol_course *course, const hol_lesson *lesson,
     return -1;
   }
   for (size_t index = 0U; index < lesson->file_count; index++) {
+    if (lesson->files[index].role != HOL_FILE_EDITABLE) continue;
     char source[4096];
     char target[4096];
     if (hol_join_path(source, sizeof(source), course->root, lesson->files[index].source,
                       error) < 0 ||
         hol_join_path(target, sizeof(target), workspace, lesson->files[index].target,
-                      error) < 0 ||
-        hol_copy_file_if_missing(source, target, error) < 0) return -1;
+                      error) < 0)
+      return -1;
+    if (lesson->files[index].sha256[0] != '\0') {
+      char actual[65];
+      if (hol_sha256_file(source, actual, error) < 0) return -1;
+      if (strcmp(actual, lesson->files[index].sha256) != 0) {
+        hol_error_set(error, HOL_ERR_CHECKSUM,
+                      "exercise resource checksum mismatch: %s",
+                      lesson->files[index].source);
+        return -1;
+      }
+    }
+    if (hol_copy_file_if_missing(source, target, error) < 0) return -1;
   }
   return 0;
 }
