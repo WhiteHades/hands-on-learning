@@ -1,0 +1,119 @@
+{
+  "schema_version": 1,
+  "cartridge_sha256": "@CARTRIDGE_SHA256@",
+  "course_id": "test.course",
+  "course_version": "1.0.0",
+  "lessons": [
+    {
+      "id": "c-greeting",
+      "workspace": {
+        "default_file": "greeting.c",
+        "files": [
+          {
+            "source": "exercises/greeting.c",
+            "target": "greeting.c",
+            "role": "editable",
+            "syntax": "c",
+            "phase": "both",
+            "sha256": "@STARTER_SHA256@"
+          },
+          {
+            "source": "exercises/exercise_support.c",
+            "target": "exercise_support.c",
+            "role": "readonly",
+            "syntax": "c",
+            "phase": "both",
+            "sha256": "@SUPPORT_SHA256@"
+          },
+          {
+            "source": "exercises/visible_test.c",
+            "target": "visible_test.c",
+            "role": "hidden",
+            "syntax": "c",
+            "phase": "run",
+            "sha256": "@VISIBLE_SHA256@"
+          },
+          {
+            "source": "exercises/check_test.c",
+            "target": "check_test.c",
+            "role": "hidden",
+            "syntax": "c",
+            "phase": "check",
+            "sha256": "@CHECK_SHA256@"
+          }
+        ]
+      },
+      "runner": {
+        "id": "c",
+        "profile": "c23",
+        "check": {"kind": "tests"}
+      }
+    },
+    {
+      "id": "c-stdout",
+      "workspace": {
+        "default_file": "main.c",
+        "files": [
+          {
+            "source": "exercises/stdout_main.c",
+            "target": "main.c",
+            "role": "editable",
+            "syntax": "c",
+            "phase": "both",
+            "sha256": "@STDOUT_MAIN_SHA256@"
+          },
+          {
+            "source": "exercises/visible_stdout.c",
+            "target": "visible_test.c",
+            "role": "hidden",
+            "syntax": "c",
+            "phase": "run",
+            "sha256": "@VISIBLE_STDOUT_SHA256@"
+          }
+        ]
+      },
+      "runner": {
+        "id": "c",
+        "profile": "c23",
+        "check": {"kind": "stdout", "expected": "Hello stdout!\n"}
+      }
+    },
+    {
+      "id": "sql-users",
+      "workspace": {
+        "default_file": "002_query.sql",
+        "files": [
+          {
+            "source": "exercises/sql_setup.sql",
+            "target": "001_setup.sql",
+            "role": "hidden",
+            "syntax": "sql",
+            "phase": "both",
+            "sha256": "@SQL_SETUP_SHA256@"
+          },
+          {
+            "source": "exercises/sql_query.sql",
+            "target": "002_query.sql",
+            "role": "editable",
+            "syntax": "sql",
+            "phase": "both",
+            "sha256": "@SQL_QUERY_SHA256@"
+          },
+          {
+            "source": "exercises/sql_check.sql",
+            "target": "003_check.sql",
+            "role": "hidden",
+            "syntax": "sql",
+            "phase": "check",
+            "sha256": "@SQL_CHECK_SHA256@"
+          }
+        ]
+      },
+      "runner": {
+        "id": "sql",
+        "profile": "sqlite3",
+        "check": {"kind": "tests"}
+      }
+    }
+  ]
+}

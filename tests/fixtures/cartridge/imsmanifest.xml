@@ -31,6 +31,9 @@
         <item identifier="start">
           <title>Start Here</title>
           <item identifier="intro" identifierref="resource-intro"><title>Introduction</title></item>
+          <item identifier="c-greeting" identifierref="resource-c-greeting"><title>Complete a C Greeting</title></item>
+          <item identifier="c-stdout" identifierref="resource-c-stdout"><title>Print Exact C Output</title></item>
+          <item identifier="sql-users" identifierref="resource-sql-users"><title>Query SQL Users</title></item>
           <item identifier="knowledge-check" identifierref="resource-knowledge-check"><title>Knowledge Check</title></item>
         </item>
       </item>
@@ -42,6 +45,24 @@
     </resource>
     <resource identifier="resource-knowledge-check" type="imsqti_xmlv1p2/imscc_xmlv1p3/assessment">
       <file href="assessments/quiz.xml"/>
+    </resource>
+    <resource identifier="resource-c-greeting" type="webcontent" href="web/c-greeting.html">
+      <file href="web/c-greeting.html"/>
+      <file href="exercises/greeting.c"/>
+      <file href="exercises/exercise_support.c"/>
+      <file href="exercises/visible_test.c"/>
+      <file href="exercises/check_test.c"/>
+    </resource>
+    <resource identifier="resource-c-stdout" type="webcontent" href="web/c-stdout.html">
+      <file href="web/c-stdout.html"/>
+      <file href="exercises/stdout_main.c"/>
+      <file href="exercises/visible_stdout.c"/>
+    </resource>
+    <resource identifier="resource-sql-users" type="webcontent" href="web/sql-users.html">
+      <file href="web/sql-users.html"/>
+      <file href="exercises/sql_setup.sql"/>
+      <file href="exercises/sql_query.sql"/>
+      <file href="exercises/sql_check.sql"/>
     </resource>
     <resource identifier="resource-license" type="webcontent" href="LICENSE">
       <file href="LICENSE"/>
