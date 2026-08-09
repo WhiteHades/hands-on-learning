@@ -40,6 +40,7 @@ typedef struct {
   size_t file_index;
   size_t quiz_question;
   size_t quiz_choice;
+  size_t media_index;
   bool *quiz_correct;
   size_t reader_scroll;
   size_t preview_scroll;
@@ -254,6 +255,10 @@ static void save_state(ui_session *session) {
   session->state.preview_scroll = session->preview_scroll;
   session->state.output_scroll = session->output_scroll;
   session->state.pane = session->pane;
+  if (lesson->file_count > 0U && session->file_index < lesson->file_count)
+    (void)snprintf(session->state.file_path, sizeof(session->state.file_path), "%s",
+                   lesson->files[session->file_index].target);
+  else session->state.file_path[0] = '\0';
   hol_error ignored = {0};
   (void)hol_state_save(session->state_path, &session->state, &ignored);
 }
@@ -272,6 +277,7 @@ static int load_lesson(ui_session *session, size_t index, hol_error *error) {
   session->file_index = 0U;
   session->quiz_question = 0U;
   session->quiz_choice = 0U;
+  session->media_index = 0U;
   free(session->quiz_correct);
   session->quiz_correct = NULL;
   if (lesson->question_count > 0U) {
@@ -399,6 +405,46 @@ static void initialize_colors(void) {
   bkgdset(COLOR_PAIR(PAIR_TEXT));
 }
 
+static bool lesson_matches(const ui_session *session, size_t index) {
+  const hol_lesson *lesson = hol_course_lesson(session->course, index);
+  return lesson != NULL && (session->query_length == 0U ||
+         strcasestr(lesson->title, session->query) != NULL);
+}
+
+static bool move_lesson_cursor(ui_session *session, int direction) {
+  size_t index = session->popup_cursor;
+  while ((direction > 0 && index + 1U < session->course->lesson_count) ||
+         (direction < 0 && index > 0U)) {
+    index = direction > 0 ? index + 1U : index - 1U;
+    if (lesson_matches(session, index)) {
+      session->popup_cursor = index;
+      return true;
+    }
+  }
+  return false;
+}
+
+static void select_lesson_edge(ui_session *session, bool last) {
+  if (session->course->lesson_count == 0U) return;
+  size_t index = last ? session->course->lesson_count - 1U : 0U;
+  for (;;) {
+    if (lesson_matches(session, index)) {
+      session->popup_cursor = index;
+      return;
+    }
+    if ((!last && index + 1U >= session->course->lesson_count) ||
+        (last && index == 0U)) return;
+    index = last ? index - 1U : index + 1U;
+  }
+}
+
+static size_t lesson_cursor_rank(const ui_session *session) {
+  size_t rank = 0U;
+  for (size_t index = 0U; index < session->popup_cursor; index++)
+    if (lesson_matches(session, index)) rank++;
+  return rank;
+}
+
 static void draw_popup(ui_session *session, int rows, int columns) {
   int width = columns > 90 ? 72 : columns - 4;
   int height = rows > 30 ? 22 : rows - 4;
@@ -427,6 +473,11 @@ static void draw_popup(ui_session *session, int rows, int columns) {
       "Esc / q       close / quit";
     draw_text(popup, help, 0U, PAIR_TEXT);
   } else if (session->popup == POPUP_COURSES) {
+    size_t available = (size_t)(height - 4);
+    if (session->popup_cursor < session->popup_scroll)
+      session->popup_scroll = session->popup_cursor;
+    else if (session->popup_cursor >= session->popup_scroll + available)
+      session->popup_scroll = session->popup_cursor - available + 1U;
     for (size_t index = session->popup_scroll; index < session->course_count; index++) {
       int row = 2 + (int)(index - session->popup_scroll);
       if (row >= height - 3) break;
@@ -439,6 +490,11 @@ static void draw_popup(ui_session *session, int rows, int columns) {
     (void)mvwprintw(popup, height - 2, 2, "Enter opens a course. Esc keeps the current course.");
   } else {
     int available = height - 4;
+    size_t selected_rank = lesson_cursor_rank(session);
+    if (selected_rank < session->popup_scroll)
+      session->popup_scroll = selected_rank;
+    else if (selected_rank >= session->popup_scroll + (size_t)available)
+      session->popup_scroll = selected_rank - (size_t)available + 1U;
     size_t visible_index = 0U;
     for (size_t index = 0U; index < session->course->lesson_count; index++) {
       const hol_lesson *lesson = hol_course_lesson(session->course, index);
@@ -474,7 +530,11 @@ static void render(ui_session *session) {
   attrset(COLOR_PAIR(PAIR_MUTED));
   (void)mvprintw(rows - 2, 1, "%s%s%s", session->search_active ? "/" : "NORMAL",
                  session->search_active ? session->query : "",
-                 session->keys.pending_length > 0U ? session->keys.pending : "");
+                  session->keys.pending_length > 0U ? session->keys.pending : "");
+  int attribution_column = columns / 3;
+  if (attribution_column > 0 && attribution_column < columns - 1)
+    (void)mvaddnstr(rows - 2, attribution_column, session->course->attribution,
+                    columns - attribution_column - 1);
   (void)mvprintw(rows - 1, 1,
                  "Space ll lessons  Space lc courses  Space r run  Space t check  ? help  q quit");
 
@@ -521,7 +581,9 @@ static void render(ui_session *session) {
     delwin(right);
   } else {
     WINDOW *pane = newwin(body_height, columns, 1, 0);
-    const char *title = session->pane == 0 ? "LESSON" : session->pane == 1 ? "BUFFER" : "OUTPUT";
+    const char *title = session->pane == 0 ? "LESSON" :
+                        session->pane == 1 && lesson->kind == HOL_LESSON_QUIZ
+                          ? "QUIZ" : session->pane == 1 ? "BUFFER" : "OUTPUT";
     draw_border(pane, title, true);
     if (session->pane == 0) draw_text(pane, session->lesson_text, session->reader_scroll, PAIR_TEXT);
     else if (session->pane == 1 && lesson->kind == HOL_LESSON_QUIZ &&
@@ -673,12 +735,13 @@ static void open_media(ui_session *session, hol_error *error) {
   }
   char path[4096];
   if (hol_join_path(path, sizeof(path), session->course->root,
-                    lesson->media_paths[0], error) < 0) return;
+                    lesson->media_paths[session->media_index], error) < 0) return;
   def_prog_mode();
   endwin();
   int status = hol_launch_media(path, error);
   reset_prog_mode();
   refresh();
+  session->media_index = (session->media_index + 1U) % lesson->media_count;
   set_output(session, status == 0 ? "Media viewer closed." : error->message);
 }
 
@@ -690,15 +753,22 @@ static void submit_quiz(ui_session *session, hol_error *error) {
   set_output(session, correct ? question->explanation : "Not quite. Try again.");
   if (correct) {
     session->quiz_correct[session->quiz_question] = true;
-    bool complete = true;
+    size_t score = 0U;
     for (size_t index = 0U; index < lesson->question_count; index++)
-      if (!session->quiz_correct[index]) complete = false;
-    if (complete)
+      if (session->quiz_correct[index]) score++;
+    if (score >= lesson->quiz_passing_score) {
       (void)hol_state_mark_completed(&session->state, session->course->id,
                                      lesson->id, error);
-    else {
-      session->quiz_question = (session->quiz_question + 1U) % lesson->question_count;
-      session->quiz_choice = 0U;
+      set_output(session, "Quiz passed.");
+    } else {
+      for (size_t offset = 1U; offset <= lesson->question_count; offset++) {
+        size_t next = (session->quiz_question + offset) % lesson->question_count;
+        if (!session->quiz_correct[next]) {
+          session->quiz_question = next;
+          session->quiz_choice = 0U;
+          break;
+        }
+      }
     }
     save_state(session);
   }
@@ -714,32 +784,38 @@ static void apply_action(ui_session *session, hol_action action, hol_error *erro
       session->query_length = 0U;
       return;
     }
-    if (action == HOL_ACTION_DOWN && session->popup == POPUP_LESSONS &&
-        session->popup_cursor + 1U < session->course->lesson_count)
-      session->popup_cursor++;
+    if (action == HOL_ACTION_DOWN && session->popup == POPUP_LESSONS)
+      (void)move_lesson_cursor(session, 1);
     if (action == HOL_ACTION_DOWN && session->popup == POPUP_COURSES &&
         session->popup_cursor + 1U < session->course_count)
       session->popup_cursor++;
-    if (action == HOL_ACTION_UP && session->popup == POPUP_LESSONS && session->popup_cursor > 0U)
-      session->popup_cursor--;
+    if (action == HOL_ACTION_UP && session->popup == POPUP_LESSONS)
+      (void)move_lesson_cursor(session, -1);
     if (action == HOL_ACTION_UP && session->popup == POPUP_COURSES &&
         session->popup_cursor > 0U) session->popup_cursor--;
-    if (action == HOL_ACTION_TOP) session->popup_cursor = 0U;
+    if (action == HOL_ACTION_TOP && session->popup == POPUP_LESSONS)
+      select_lesson_edge(session, false);
+    if (action == HOL_ACTION_TOP && session->popup == POPUP_COURSES)
+      session->popup_cursor = 0U;
     if (action == HOL_ACTION_BOTTOM && session->popup == POPUP_LESSONS)
-      session->popup_cursor = session->course->lesson_count - 1U;
+      select_lesson_edge(session, true);
     if (action == HOL_ACTION_BOTTOM && session->popup == POPUP_COURSES &&
         session->course_count > 0U) session->popup_cursor = session->course_count - 1U;
-    if (action == HOL_ACTION_HALF_DOWN && session->popup == POPUP_LESSONS &&
-        session->popup_cursor + 8U < session->course->lesson_count)
-      session->popup_cursor += 8U;
+    if (action == HOL_ACTION_HALF_DOWN && session->popup == POPUP_LESSONS)
+      for (size_t step = 0U; step < 8U; step++)
+        if (!move_lesson_cursor(session, 1)) break;
     if (action == HOL_ACTION_HALF_DOWN && session->popup == POPUP_COURSES &&
         session->popup_cursor + 8U < session->course_count)
       session->popup_cursor += 8U;
-    if (action == HOL_ACTION_HALF_UP &&
-        (session->popup == POPUP_LESSONS || session->popup == POPUP_COURSES))
+    if (action == HOL_ACTION_HALF_UP && session->popup == POPUP_LESSONS)
+      for (size_t step = 0U; step < 8U; step++)
+        if (!move_lesson_cursor(session, -1)) break;
+    if (action == HOL_ACTION_HALF_UP && session->popup == POPUP_COURSES)
       session->popup_cursor = session->popup_cursor > 8U ? session->popup_cursor - 8U : 0U;
     if (action == HOL_ACTION_SELECT && session->popup == POPUP_LESSONS) {
-      if (load_lesson(session, session->popup_cursor, error) < 0) set_output(session, error->message);
+      if (lesson_matches(session, session->popup_cursor) &&
+          load_lesson(session, session->popup_cursor, error) < 0)
+        set_output(session, error->message);
       session->popup = POPUP_NONE;
     }
     if (action == HOL_ACTION_SELECT && session->popup == POPUP_COURSES &&
@@ -788,10 +864,16 @@ static void apply_action(ui_session *session, hol_action action, hol_error *erro
     case HOL_ACTION_LESSON_PICKER:
       session->popup = POPUP_LESSONS;
       session->popup_cursor = session->lesson_index;
+      session->popup_scroll = 0U;
+      session->query[0] = '\0';
+      session->query_length = 0U;
       break;
     case HOL_ACTION_COURSE_PICKER:
       session->popup = POPUP_COURSES;
       session->popup_cursor = session->active_course;
+      session->popup_scroll = 0U;
+      session->query[0] = '\0';
+      session->query_length = 0U;
       break;
     case HOL_ACTION_HELP: session->popup = POPUP_HELP; break;
     case HOL_ACTION_RUN: run_lesson(session, HOL_RUN, error); break;
@@ -825,7 +907,8 @@ int hol_ui_run(const char *course_root, hol_error *error) {
     hol_course_free(session.course);
     return -1;
   }
-  if (strcmp(session.state.course_id, session.course->id) == 0) {
+  bool restore_course_state = strcmp(session.state.course_id, session.course->id) == 0;
+  if (restore_course_state) {
     for (size_t index = 0U; index < session.course->lesson_count; index++) {
       const hol_lesson *lesson = hol_course_lesson(session.course, index);
       if (lesson != NULL && strcmp(lesson->id, session.state.lesson_id) == 0) {
@@ -835,14 +918,29 @@ int hol_ui_run(const char *course_root, hol_error *error) {
     }
     session.pane = session.state.pane >= 0 && session.state.pane <= 2 ? session.state.pane : 0;
   }
-  size_t saved_reader_scroll = session.state.reader_scroll;
-  size_t saved_preview_scroll = session.state.preview_scroll;
-  size_t saved_output_scroll = session.state.output_scroll;
+  size_t saved_reader_scroll = restore_course_state ? session.state.reader_scroll : 0U;
+  size_t saved_preview_scroll = restore_course_state ? session.state.preview_scroll : 0U;
+  size_t saved_output_scroll = restore_course_state ? session.state.output_scroll : 0U;
+  char saved_file[HOL_PATH_MAX + 1];
+  (void)snprintf(saved_file, sizeof(saved_file), "%s",
+                 restore_course_state ? session.state.file_path : "");
   set_output(&session, "Ready. Press ? for keybindings.");
   if (load_lesson(&session, session.lesson_index, error) < 0) goto failure;
+  const hol_lesson *saved_lesson = current_lesson(&session);
+  if (saved_lesson != NULL && saved_file[0] != '\0') {
+    for (size_t index = 0U; index < saved_lesson->file_count; index++) {
+      if (strcmp(saved_lesson->files[index].target, saved_file) == 0 &&
+          saved_lesson->files[index].role != HOL_FILE_HIDDEN) {
+        session.file_index = index;
+        reload_preview(&session, error);
+        break;
+      }
+    }
+  }
   session.reader_scroll = saved_reader_scroll;
   session.preview_scroll = saved_preview_scroll;
   session.output_scroll = saved_output_scroll;
+  save_state(&session);
 
   (void)setlocale(LC_ALL, "");
   if (initscr() == NULL) {
@@ -918,6 +1016,9 @@ int hol_ui_run(const char *course_root, hol_error *error) {
         session.query[session.query_length++] = (char)key;
         session.query[session.query_length] = '\0';
       }
+      if (session.popup == POPUP_LESSONS &&
+          !lesson_matches(&session, session.popup_cursor))
+        select_lesson_edge(&session, false);
       continue;
     }
     hol_action action;
