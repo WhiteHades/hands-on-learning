@@ -3,23 +3,6 @@
   "updated_at": "2026-08-09T00:00:00Z",
   "courses": [
     {
-      "id": "hol.demo-c",
-      "version": "1.0.0",
-      "title": "C in Three Small Steps",
-      "description": "A tiny original course for trying the complete local learning workflow.",
-      "minimum_app_version": "0.1.0",
-      "lesson_count": 3,
-      "license": {
-        "spdx": "MIT",
-        "attribution": "SPDX-License-Identifier: MIT\nCopyright 2026 Hands-on Learning Contributors"
-      },
-      "bundle": {
-        "url": "https://github.com/WhiteHades/hands-on-learning/releases/download/v0.1.0/hol.demo-c-1.0.0.imscc",
-        "bytes": 3289,
-        "sha256": "7157d4a3fa736531e201b7bc547fe5edf4f4a7d6329cb30b2e10056ea2390e9a"
-      }
-    },
-    {
       "id": "bootdev.memory-management-c",
       "version": "1.0.0",
       "title": "Learn Memory Management in C",
