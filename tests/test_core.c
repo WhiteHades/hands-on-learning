@@ -92,12 +92,17 @@ int main(void) {
   (void)strcpy(state.course_id, "hol.test");
   (void)strcpy(state.lesson_id, "hello");
   state.reader_scroll = 12U;
+  assert(hol_state_mark_completed(&state, "hol.test", "hello", &error) == 0);
+  assert(hol_state_completed(&state, "hol.test", "hello"));
   (void)snprintf(path, sizeof(path), "%s/state/progress.json", root);
   assert(hol_state_save(path, &state, &error) == 0);
   hol_state loaded = {0};
   assert(hol_state_load(path, &loaded, &error) == 0);
   assert(strcmp(loaded.lesson_id, "hello") == 0);
   assert(loaded.reader_scroll == 12U);
+  assert(hol_state_completed(&loaded, "hol.test", "hello"));
+  hol_state_free(&loaded);
+  hol_state_free(&state);
 
   hol_course *demo = NULL;
   assert(hol_course_load("courses/demo.holcourse", &demo, &error) == 0);

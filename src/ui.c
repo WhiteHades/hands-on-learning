@@ -38,7 +38,9 @@ typedef struct {
   hol_key_state keys;
   size_t lesson_index;
   size_t file_index;
+  size_t quiz_question;
   size_t quiz_choice;
+  bool *quiz_correct;
   size_t reader_scroll;
   size_t preview_scroll;
   size_t output_scroll;
@@ -174,7 +176,14 @@ static int load_lesson(ui_session *session, size_t index, hol_error *error) {
   session->lesson_text = lesson_text;
   session->lesson_index = index;
   session->file_index = 0U;
+  session->quiz_question = 0U;
   session->quiz_choice = 0U;
+  free(session->quiz_correct);
+  session->quiz_correct = NULL;
+  if (lesson->question_count > 0U) {
+    session->quiz_correct = calloc(lesson->question_count, sizeof(*session->quiz_correct));
+    if (session->quiz_correct == NULL) return -1;
+  }
   session->reader_scroll = 0U;
   session->preview_scroll = 0U;
   free(session->preview_text);
@@ -327,7 +336,9 @@ static void draw_popup(ui_session *session, int rows, int columns) {
     wattrset(popup, COLOR_PAIR(PAIR_SELECTED));
     (void)mvwprintw(popup, 2, 2, "%-*s", width - 4, session->course->title);
     wattrset(popup, COLOR_PAIR(PAIR_MUTED));
-    (void)mvwprintw(popup, 4, 2, "Install and validate more courses with the catalog CLI.");
+    (void)mvwprintw(popup, 4, 2, "License: %s", session->course->license_spdx);
+    (void)mvwaddnstr(popup, 6, 2, session->course->attribution, width - 4);
+    (void)mvwprintw(popup, 8, 2, "Install and validate more courses with the catalog CLI.");
   } else {
     int available = height - 4;
     size_t visible_index = 0U;
@@ -388,12 +399,14 @@ static void render(ui_session *session) {
     const char *preview_title = lesson->kind == HOL_LESSON_QUIZ ? "QUIZ" : "BUFFER";
     draw_border(preview, preview_title, session->pane == 1);
     if (lesson->kind == HOL_LESSON_QUIZ && lesson->question_count > 0U) {
-      hol_quiz_question *question = &lesson->questions[0];
-      (void)mvwaddnstr(preview, 2, 2, question->prompt, getmaxx(preview) - 4);
+      hol_quiz_question *question = &lesson->questions[session->quiz_question];
+      (void)mvwprintw(preview, 1, 2, "Question %zu of %zu",
+                      session->quiz_question + 1U, lesson->question_count);
+      (void)mvwaddnstr(preview, 3, 2, question->prompt, getmaxx(preview) - 4);
       for (size_t index = 0U; index < question->choice_count &&
-           (int)index + 4 < getmaxy(preview) - 1; index++) {
+           (int)index + 5 < getmaxy(preview) - 1; index++) {
         wattrset(preview, COLOR_PAIR(index == session->quiz_choice ? PAIR_SELECTED : PAIR_TEXT));
-        (void)mvwprintw(preview, (int)index + 4, 3, "%s  %s",
+        (void)mvwprintw(preview, (int)index + 5, 3, "%s  %s",
                         question->choices[index].id, question->choices[index].text);
       }
     } else draw_text(preview, session->preview_text, session->preview_scroll, PAIR_TEXT);
@@ -415,12 +428,14 @@ static void render(ui_session *session) {
     if (session->pane == 0) draw_text(pane, session->lesson_text, session->reader_scroll, PAIR_TEXT);
     else if (session->pane == 1 && lesson->kind == HOL_LESSON_QUIZ &&
              lesson->question_count > 0U) {
-      hol_quiz_question *question = &lesson->questions[0];
-      (void)mvwaddnstr(pane, 2, 2, question->prompt, getmaxx(pane) - 4);
+      hol_quiz_question *question = &lesson->questions[session->quiz_question];
+      (void)mvwprintw(pane, 1, 2, "Question %zu of %zu",
+                      session->quiz_question + 1U, lesson->question_count);
+      (void)mvwaddnstr(pane, 3, 2, question->prompt, getmaxx(pane) - 4);
       for (size_t index = 0U; index < question->choice_count &&
-           (int)index + 4 < getmaxy(pane) - 1; index++) {
+           (int)index + 5 < getmaxy(pane) - 1; index++) {
         wattrset(pane, COLOR_PAIR(index == session->quiz_choice ? PAIR_SELECTED : PAIR_TEXT));
-        (void)mvwprintw(pane, (int)index + 4, 3, "%s  %s",
+        (void)mvwprintw(pane, (int)index + 5, 3, "%s  %s",
                         question->choices[index].id, question->choices[index].text);
       }
     } else if (session->pane == 1)
@@ -572,12 +587,21 @@ static void open_media(ui_session *session, hol_error *error) {
 static void submit_quiz(ui_session *session, hol_error *error) {
   const hol_lesson *lesson = current_lesson(session);
   if (lesson == NULL || lesson->question_count == 0U) return;
-  hol_quiz_question *question = &lesson->questions[0];
+  hol_quiz_question *question = &lesson->questions[session->quiz_question];
   bool correct = strcmp(question->choices[session->quiz_choice].id, question->answer) == 0;
   set_output(session, correct ? question->explanation : "Not quite. Try again.");
   if (correct) {
-    (void)hol_state_mark_completed(&session->state, session->course->id,
-                                   lesson->id, error);
+    session->quiz_correct[session->quiz_question] = true;
+    bool complete = true;
+    for (size_t index = 0U; index < lesson->question_count; index++)
+      if (!session->quiz_correct[index]) complete = false;
+    if (complete)
+      (void)hol_state_mark_completed(&session->state, session->course->id,
+                                     lesson->id, error);
+    else {
+      session->quiz_question = (session->quiz_question + 1U) % lesson->question_count;
+      session->quiz_choice = 0U;
+    }
     save_state(session);
   }
 }
@@ -618,15 +642,17 @@ static void apply_action(ui_session *session, hol_action action, hol_error *erro
     case HOL_ACTION_RIGHT: session->pane = session->pane < 2 ? session->pane + 1 : 2; break;
     case HOL_ACTION_DOWN:
       if (lesson != NULL && lesson->kind == HOL_LESSON_QUIZ && session->pane == 1 &&
-          lesson->questions[0].choice_count > 0U)
-        session->quiz_choice = (session->quiz_choice + 1U) % lesson->questions[0].choice_count;
+          lesson->questions[session->quiz_question].choice_count > 0U)
+        session->quiz_choice = (session->quiz_choice + 1U) %
+                               lesson->questions[session->quiz_question].choice_count;
       else if (*scroll + 1U < total) (*scroll)++;
       break;
     case HOL_ACTION_UP:
       if (lesson != NULL && lesson->kind == HOL_LESSON_QUIZ && session->pane == 1 &&
-          lesson->questions[0].choice_count > 0U)
-        session->quiz_choice = (session->quiz_choice + lesson->questions[0].choice_count - 1U) %
-                               lesson->questions[0].choice_count;
+          lesson->questions[session->quiz_question].choice_count > 0U)
+        session->quiz_choice = (session->quiz_choice +
+          lesson->questions[session->quiz_question].choice_count - 1U) %
+          lesson->questions[session->quiz_question].choice_count;
       else if (*scroll > 0U) (*scroll)--;
       break;
     case HOL_ACTION_TOP: *scroll = 0U; break;
@@ -783,6 +809,7 @@ int hol_ui_run(const char *course_root, hol_error *error) {
   free(session.lesson_text);
   free(session.preview_text);
   free(session.output);
+  free(session.quiz_correct);
   hol_state_free(&session.state);
   hol_course_free(session.course);
   return 0;
@@ -791,6 +818,7 @@ failure:
   free(session.lesson_text);
   free(session.preview_text);
   free(session.output);
+  free(session.quiz_correct);
   hol_state_free(&session.state);
   hol_course_free(session.course);
   return -1;
