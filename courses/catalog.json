@@ -11,12 +11,12 @@
       "lesson_count": 3,
       "license": {
         "spdx": "MIT",
-        "attribution": "Copyright 2026 Hands-on Learning Contributors"
+        "attribution": "SPDX-License-Identifier: MIT\nCopyright 2026 Hands-on Learning Contributors"
       },
       "bundle": {
-        "url": "https://github.com/WhiteHades/hands-on-learning/releases/download/v0.1.0/hol.demo-c-1.0.0.holcourse.tar",
-        "bytes": 20480,
-        "sha256": "7fd0d7362b56ba1cec5b9113f83dfb658c4995d0f86b908b6d2a7fe35e950cfb"
+        "url": "https://github.com/WhiteHades/hands-on-learning/releases/download/v0.1.0/hol.demo-c-1.0.0.imscc",
+        "bytes": 3929,
+        "sha256": "8ef79813a6c9beb133366128e1466a72685e4e41a29ffc65494c036090635a57"
       }
     },
     {
@@ -28,12 +28,12 @@
       "lesson_count": 102,
       "license": {
         "spdx": "LicenseRef-Bootdev-Course",
-        "attribution": "Course content copyright Boot.dev."
+        "attribution": "SPDX-License-Identifier: LicenseRef-Bootdev-Course\nCourse content copyright Boot.dev."
       },
       "bundle": {
-        "url": "https://github.com/WhiteHades/hands-on-learning/releases/download/v0.1.0/bootdev.memory-management-c-1.0.0.holcourse.tar",
-        "bytes": 651520000,
-        "sha256": "3aa6d0db042563a2432a7b0a5e7753c014419db532f02e85370f962616cc7317"
+        "url": "https://github.com/WhiteHades/hands-on-learning/releases/download/v0.1.0/bootdev.memory-management-c-1.0.0.imscc",
+        "bytes": 460713091,
+        "sha256": "ea5a8a7346c660ed32b8de12becbd171f42bcdfeb304428fb8fa518c838e3f9d"
       }
     },
     {
@@ -45,12 +45,12 @@
       "lesson_count": 95,
       "license": {
         "spdx": "LicenseRef-Bootdev-Course",
-        "attribution": "Course content copyright Boot.dev."
+        "attribution": "SPDX-License-Identifier: LicenseRef-Bootdev-Course\nCourse content copyright Boot.dev."
       },
       "bundle": {
-        "url": "https://github.com/WhiteHades/hands-on-learning/releases/download/v0.1.0/bootdev.learn-sql-1.0.0.holcourse.tar",
-        "bytes": 864870400,
-        "sha256": "fe01512c21814b74fe9b0c07c65db119156e956b391ddba2ff87db51f189f117"
+        "url": "https://github.com/WhiteHades/hands-on-learning/releases/download/v0.1.0/bootdev.learn-sql-1.0.0.imscc",
+        "bytes": 145790142,
+        "sha256": "ae276ccb6b23512a230951b721d83b7119e9b06d06d4814d1036e4f815d47c98"
       }
     }
   ]

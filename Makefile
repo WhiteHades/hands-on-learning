@@ -42,7 +42,9 @@ build:
 
 $(DEMO_CARTRIDGE): $(DEMO_SOURCES) | build
 	rm -f $@
-	cd courses/demo && zip -X -q -r ../../$@ imsmanifest.xml LICENSE web assessments
+	bsdtar --format zip --options zip:compression=deflate --uid 0 --gid 0 \
+		--uname '' --gname '' --mtime '2026-08-09 00:00Z' -cf $@ \
+		-C courses/demo imsmanifest.xml LICENSE web assessments
 
 test: $(TEST_BINS) $(APP) $(DEMO_CARTRIDGE)
 	@set -e; for test_bin in $(TEST_BINS); do "$$test_bin"; done
